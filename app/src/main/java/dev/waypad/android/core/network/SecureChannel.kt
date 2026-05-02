@@ -49,7 +49,8 @@ class SecureChannel private constructor(
         fun connect(host: String, port: Int, expectedFingerprint: String? = null): SecureChannel {
             val socket = Socket(host, port)
             socket.tcpNoDelay = true
-            socket.soTimeout = 30_000
+            socket.keepAlive = true
+            socket.soTimeout = 130_000
             val reader = socket.getInputStream().bufferedReader()
             val writer = socket.getOutputStream().bufferedWriter()
 

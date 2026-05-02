@@ -190,9 +190,25 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun pointerMove(dx: Float, dy: Float) = launchQuiet { client.pointerMove(dx, dy) }
 
-    fun pointerButton(button: PointerButton, state: ButtonState) = launchCommand(null) { client.pointerButton(button, state) }
+    fun pointerButton(button: PointerButton, state: ButtonState) {
+        if (_state.value.capabilities.inputBackend == "hyprland-hyprctl") {
+            if (state == ButtonState.Pressed) {
+                _state.update { it.copy(status = "Hyprland fallback moves the pointer only; clicks need RemoteDesktop portal.") }
+            }
+            return
+        }
+        launchCommand(null) { client.pointerButton(button, state) }
+    }
 
-    fun scroll(dx: Float, dy: Float, finish: Boolean = false) = launchQuiet { client.scroll(dx, dy, finish) }
+    fun scroll(dx: Float, dy: Float, finish: Boolean = false) {
+        if (_state.value.capabilities.inputBackend == "hyprland-hyprctl") {
+            if (!finish) {
+                _state.update { it.copy(status = "Scroll needs RemoteDesktop portal on Hyprland.") }
+            }
+            return
+        }
+        launchQuiet { client.scroll(dx, dy, finish) }
+    }
 
     fun sendText(text: String) = launchCommand("Sending text...") { client.text(text) }
 
@@ -220,12 +236,44 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             runCatching { block() }
                 .onSuccess { if (status != null) _state.update { it.copy(status = "Ready") } }
-                .onFailure { fail("Command failed", it) }
+                .onFailure { throwable ->
+                    if (throwable.isTransportFailure() && reconnectCurrentHost()) {
+                        runCatching { block() }
+                            .onSuccess { _state.update { it.copy(status = "Connection restored", error = null) } }
+                            .onFailure { fail("Command failed", it) }
+                    } else {
+                        fail("Command failed", throwable)
+                    }
+                }
         }
     }
 
     private fun launchQuiet(block: suspend () -> Unit) {
-        viewModelScope.launch { runCatching { block() }.onFailure { fail("Input failed", it) } }
+        viewModelScope.launch {
+            runCatching { block() }
+                .onFailure { throwable ->
+                    if (throwable.isTransportFailure()) {
+                        reconnectCurrentHost()
+                    } else {
+                        fail("Input failed", throwable)
+                    }
+                }
+        }
+    }
+
+    private suspend fun reconnectCurrentHost(): Boolean {
+        val host = _state.value.connectedHost ?: return false
+        return runCatching {
+            val capabilities = client.connect(host)
+            _state.update {
+                it.copy(
+                    capabilities = capabilities,
+                    connectionState = ConnectionState.Connected,
+                    status = "Reconnected to ${host.hostName}",
+                    error = null,
+                )
+            }
+        }.isSuccess
     }
 
     private fun fail(prefix: String, throwable: Throwable) {
@@ -237,4 +285,15 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
     }
+}
+
+private fun Throwable.isTransportFailure(): Boolean {
+    val text = generateSequence(this) { it.cause }
+        .mapNotNull { it.message }
+        .joinToString(" ")
+        .lowercase()
+    return "broken pipe" in text ||
+        "connection reset" in text ||
+        "connection closed" in text ||
+        "socket closed" in text
 }

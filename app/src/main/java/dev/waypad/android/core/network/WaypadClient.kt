@@ -5,11 +5,14 @@ import dev.waypad.android.core.model.CapabilitySummary
 import dev.waypad.android.core.model.PointerButton
 import dev.waypad.android.core.model.TrustedHost
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
 class WaypadClient {
+    private val transportMutex = Mutex()
     private var channel: SecureChannel? = null
 
     suspend fun pair(
@@ -18,7 +21,8 @@ class WaypadClient {
         deviceName: String,
         pairingCode: String,
         expectedFingerprint: String? = null,
-    ): Pair<TrustedHost, CapabilitySummary> = withContext(Dispatchers.IO) {
+    ): Pair<TrustedHost, CapabilitySummary> = withContext(Dispatchers.IO) { transportMutex.withLock {
+        channel?.close()
         val ch = SecureChannel.connect(address, port, expectedFingerprint)
         val id = requestId()
         ch.send(
@@ -43,9 +47,10 @@ class WaypadClient {
         )
         channel = ch
         host to data.optJSONObject("capabilities").toCapabilitySummary()
-    }
+    } }
 
-    suspend fun connect(host: TrustedHost): CapabilitySummary = withContext(Dispatchers.IO) {
+    suspend fun connect(host: TrustedHost): CapabilitySummary = withContext(Dispatchers.IO) { transportMutex.withLock {
+        channel?.close()
         val ch = SecureChannel.connect(host.address, host.port, host.fingerprint)
         val id = requestId()
         ch.send(
@@ -59,7 +64,7 @@ class WaypadClient {
         val response = ch.receiveResponse(id)
         channel = ch
         response.getJSONObject("data").optJSONObject("capabilities").toCapabilitySummary()
-    }
+    } }
 
     suspend fun prepareInput() {
         command("prepare_input")
@@ -117,13 +122,13 @@ class WaypadClient {
         channel = null
     }
 
-    private suspend fun command(name: String, body: JSONObject = JSONObject()): JSONObject? = withContext(Dispatchers.IO) {
+    private suspend fun command(name: String, body: JSONObject = JSONObject()): JSONObject? = withContext(Dispatchers.IO) { transportMutex.withLock {
         val ch = channel ?: error("Not connected")
         val id = requestId()
         val command = JSONObject(body.toString()).put("name", name)
         ch.send(JSONObject().put("type", "command").put("request_id", id).put("command", command))
         ch.receiveResponse(id).optJSONObject("data")
-    }
+    } }
 
     private fun SecureChannel.receiveResponse(id: String): JSONObject {
         val response = receive()
