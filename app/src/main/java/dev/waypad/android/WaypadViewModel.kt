@@ -47,7 +47,7 @@ data class WaypadUiState(
 )
 
 class WaypadViewModel(application: Application) : AndroidViewModel(application) {
-    private val discovery = WaypadDiscovery()
+    private val discovery = WaypadDiscovery(application)
     private val client = WaypadClient()
     private val store = TrustedHostStore(application)
     private val _state = MutableStateFlow(
