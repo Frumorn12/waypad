@@ -3,6 +3,7 @@ package dev.waypad.android.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.util.Log
 import android.view.WindowInsets
@@ -121,6 +122,7 @@ import kotlin.math.hypot
 fun WaypadApp(viewModel: WaypadViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val remoteFullscreen = state.screen == Screen.RemoteDisplay && state.remoteScreenFullscreen
+    RemoteScreenOrientationEffect(state.screen == Screen.RemoteDisplay)
     FullscreenSystemUiEffect(remoteFullscreen)
     BackHandler(remoteFullscreen) {
         viewModel.setRemoteScreenFullscreen(false)
@@ -163,6 +165,25 @@ fun WaypadApp(viewModel: WaypadViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RemoteScreenOrientationEffect(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(enabled, view) {
+        val activity = view.context.findActivity()
+        val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        activity?.requestedOrientation = if (enabled) {
+            Log.i("WaypadRemoteScreen", "orientation_policy=full_sensor")
+            ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        } else {
+            Log.i("WaypadRemoteScreen", "orientation_policy=portrait")
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        onDispose {
+            activity?.requestedOrientation = previous
         }
     }
 }
@@ -704,13 +725,6 @@ private fun RemoteDisplayScreen(state: WaypadUiState, viewModel: WaypadViewModel
     val fullscreen = state.remoteScreenFullscreen
     val activeSource = state.screenStreamInfo?.source
         ?: state.screenSources.firstOrNull { it.id == state.selectedScreenSourceId }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            viewModel.setRemoteScreenFullscreen(false)
-            viewModel.stopScreenStream()
-        }
-    }
 
     Column(
         Modifier

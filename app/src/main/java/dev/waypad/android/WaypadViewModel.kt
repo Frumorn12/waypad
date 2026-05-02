@@ -110,7 +110,21 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun go(screen: Screen) {
-        _state.update { it.copy(screen = screen, error = null) }
+        val previous = _state.value.screen
+        if (previous == Screen.RemoteDisplay && screen != Screen.RemoteDisplay) {
+            stopScreenStream()
+        }
+        _state.update {
+            it.copy(
+                screen = screen,
+                error = null,
+                remoteScreenFullscreen = if (screen == Screen.RemoteDisplay) {
+                    it.remoteScreenFullscreen
+                } else {
+                    false
+                },
+            )
+        }
         if (screen == Screen.RemoteDisplay && _state.value.screenSources.isEmpty()) {
             loadScreenSources()
         }

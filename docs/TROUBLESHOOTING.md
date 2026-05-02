@@ -100,6 +100,16 @@ adb logcat -d -v time | grep -E 'remote_screen_fullscreen|fullscreen_system_ui|s
 
 The expected transition is `remote_screen_fullscreen enabled=true`, `fullscreen_system_ui_hide`, then `enabled=false`, `fullscreen_system_ui_show` with no `stream_close` in between.
 
+## Remote Screen Stays Portrait
+
+The Android app should switch to sensor-driven rotation while the Screen tab is open, then return to portrait on the other tabs. If it stays portrait, reinstall the latest APK and check:
+
+```bash
+adb logcat -d -v time | grep -E 'orientation_policy|WaypadRemoteScreen'
+```
+
+Entering the Screen tab should log `orientation_policy=full_sensor`. Leaving it should log `orientation_policy=portrait`.
+
 ## Stream Works But Taps Do Not Control The PC
 
 Capture and input are separate host capabilities. The app can show the screen while input is blocked. Check Diagnostics:

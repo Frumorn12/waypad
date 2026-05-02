@@ -44,4 +44,4 @@ The Android app does not pretend input is always available. It displays the daem
 
 Remote screen taps are mapped through `ScreenViewport`, which accounts for contain-fit scaling and letterboxing. Touches in black bars are ignored instead of being sent to the wrong desktop coordinate.
 
-Fullscreen is UI state only. Entering or exiting fullscreen hides/shows system bars and rearranges controls, but it does not intentionally stop the active stream session. Stream reconnect and manual stop remain explicit ViewModel operations.
+Remote screen mode temporarily switches the activity orientation policy to sensor-driven rotation so landscape desktop sharing is usable from the phone. Other app screens return to portrait. Fullscreen is UI state only: entering or exiting fullscreen hides/shows system bars and rearranges controls, but it does not intentionally stop the active stream session. Stream reconnect and manual stop remain explicit ViewModel operations.
