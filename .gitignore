@@ -1,0 +1,40 @@
+# Gradle and Android build outputs
+.gradle/
+**/build/
+/captures/
+*.apk
+*.aab
+*.apks
+*.idsig
+
+# Local Android SDK and signing material
+local.properties
+keystore.properties
+*.jks
+*.keystore
+*.p12
+
+# Local env overrides and secrets
+.env
+.env.local
+*.local.properties
+*.local.json
+
+# IDE/editor noise
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Kotlin/Java generated noise
+*.class
+hs_err_pid*
+
+# Keep Gradle wrapper/config files if they are added later.
+!gradle/wrapper/gradle-wrapper.properties
+!gradlew
+!gradlew.bat
