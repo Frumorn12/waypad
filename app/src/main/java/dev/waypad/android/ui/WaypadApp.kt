@@ -66,6 +66,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,9 +114,11 @@ import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.ConnectionState
 import dev.waypad.android.core.model.DiscoveredHost
 import dev.waypad.android.core.model.PointerButton
+import dev.waypad.android.core.model.StreamProfile
 import dev.waypad.android.core.model.TrustedHost
 import dev.waypad.android.core.screen.ScreenViewport
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlin.math.hypot
 
 @Composable
@@ -406,6 +409,7 @@ private fun OnboardingScreen(viewModel: WaypadViewModel) {
 
 @Composable
 private fun DiscoveryScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
+    var inviteText by remember { mutableStateOf("") }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             SectionTitle("Host Discovery", "UDP LAN discovery with manual IP fallback.")
@@ -441,6 +445,32 @@ private fun DiscoveryScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 Spacer(Modifier.height(12.dp))
                 Button(onClick = { viewModel.useManualHost() }, modifier = Modifier.fillMaxWidth()) {
                     Text("Continue")
+                }
+            }
+        }
+        item {
+            GlassCard {
+                Text("QR invite", color = Mist, fontWeight = FontWeight.Bold)
+                Text(
+                    "Scan a terminal QR with the system camera, or paste the waypad://invite payload here.",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = inviteText,
+                    onValueChange = { inviteText = it.trim() },
+                    label = { Text("waypad://invite...") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { viewModel.applyInvite(inviteText) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = inviteText.startsWith("waypad://invite"),
+                ) {
+                    Text("Use invite")
                 }
             }
         }
@@ -747,8 +777,17 @@ private fun RemoteDisplayScreen(state: WaypadUiState, viewModel: WaypadViewModel
     val haptics = LocalHapticFeedback.current
     val tapSlop = with(LocalDensity.current) { 8.dp.toPx() }
     val fullscreen = state.remoteScreenFullscreen
+    val gameMode = state.remoteScreenGameMode
+    val showFullscreenControls = fullscreen && (!gameMode || state.remoteScreenControlsVisible)
     val activeSource = state.screenStreamInfo?.source
         ?: state.screenSources.firstOrNull { it.id == state.selectedScreenSourceId }
+
+    LaunchedEffect(fullscreen, gameMode, state.remoteScreenControlsVisible) {
+        if (fullscreen && gameMode && state.remoteScreenControlsVisible) {
+            delay(3_000)
+            viewModel.setRemoteScreenControlsVisible(false, "auto_hide")
+        }
+    }
 
     Column(
         Modifier
@@ -779,22 +818,50 @@ private fun RemoteDisplayScreen(state: WaypadUiState, viewModel: WaypadViewModel
                 }
                 Spacer(Modifier.height(10.dp))
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { viewModel.startScreenStream() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !state.screenStreaming,
-                ) {
-                    Text("Start")
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item {
+                    Button(
+                        onClick = { viewModel.startScreenStream() },
+                        modifier = Modifier.width(150.dp),
+                        enabled = !state.screenStreaming,
+                    ) {
+                        Text("Start", maxLines = 1)
+                    }
                 }
-                OutlinedButton(onClick = { viewModel.stopScreenStream() }, modifier = Modifier.weight(1f)) {
-                    Text("Stop")
+                item {
+                    OutlinedButton(
+                        onClick = { viewModel.stopScreenStream() },
+                        modifier = Modifier.width(150.dp),
+                    ) {
+                        Text("Stop", maxLines = 1)
+                    }
                 }
-                OutlinedButton(onClick = { viewModel.loadScreenSources() }, modifier = Modifier.weight(1f)) {
-                    Text("Sources")
+                item {
+                    OutlinedButton(
+                        onClick = { viewModel.loadScreenSources() },
+                        modifier = Modifier.width(150.dp),
+                    ) {
+                        Text("Sources", maxLines = 1)
+                    }
                 }
-                OutlinedButton(onClick = { viewModel.setRemoteScreenFullscreen(true) }, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Rounded.Fullscreen, contentDescription = "Fullscreen")
+                item {
+                    OutlinedButton(
+                        onClick = { viewModel.setRemoteScreenFullscreen(true) },
+                        modifier = Modifier.width(96.dp),
+                    ) {
+                        Icon(Icons.Rounded.Fullscreen, contentDescription = "Fullscreen")
+                    }
+                }
+                item {
+                    OutlinedButton(
+                        onClick = { viewModel.setRemoteScreenGameMode(true) },
+                        modifier = Modifier.width(150.dp),
+                    ) {
+                        Text("Game", maxLines = 1)
+                    }
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -917,32 +984,56 @@ private fun RemoteDisplayScreen(state: WaypadUiState, viewModel: WaypadViewModel
                     Text(activeSource?.label ?: "Select a source and start streaming", color = Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
-            Surface(
-                color = Graphite.copy(alpha = 0.72f),
-                contentColor = Mist,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp),
-            ) {
-                Text(
-                    state.screenStatus,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (!fullscreen || !gameMode || state.remoteScreenControlsVisible) {
+                Surface(
+                    color = Graphite.copy(alpha = 0.72f),
+                    contentColor = Mist,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp),
+                ) {
+                    Text(
+                        state.screenStatus,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            if (fullscreen) {
+            if (showFullscreenControls) {
                 RemoteScreenFullscreenBar(
                     status = state.screenStatus,
                     onExit = { viewModel.setRemoteScreenFullscreen(false) },
                     onReconnect = { viewModel.startScreenStream() },
                     onKeyboard = { quickKeyboardVisible = !quickKeyboardVisible },
+                    gameMode = gameMode,
+                    onGameMode = { viewModel.setRemoteScreenGameMode(!gameMode) },
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 10.dp, start = 10.dp, end = 10.dp),
                 )
+            } else if (fullscreen && gameMode) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth(0.36f)
+                        .height(34.dp)
+                        .clickable { viewModel.revealRemoteScreenControls("touch_top_handle") },
+                ) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 6.dp)
+                            .width(44.dp)
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Mist.copy(alpha = 0.32f)),
+                    )
+                }
+            }
+            if (fullscreen && state.remoteScreenControlsVisible) {
                 if (quickKeyboardVisible) {
                     Box(
                         Modifier
@@ -1013,6 +1104,8 @@ private fun RemoteScreenFullscreenBar(
     onExit: () -> Unit,
     onReconnect: () -> Unit,
     onKeyboard: () -> Unit,
+    gameMode: Boolean,
+    onGameMode: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -1041,6 +1134,9 @@ private fun RemoteScreenFullscreenBar(
             }
             IconButton(onClick = onKeyboard) {
                 Icon(Icons.Rounded.Keyboard, contentDescription = "Keyboard", tint = Mist)
+            }
+            TextButton(onClick = onGameMode) {
+                Text(if (gameMode) "Game on" else "Game", color = if (gameMode) Acid else Mist)
             }
             IconButton(onClick = onExit) {
                 Icon(Icons.Rounded.Close, contentDescription = "Close fullscreen", tint = Mist)
@@ -1155,6 +1251,85 @@ private fun SettingsScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
             }
         }
         item {
+            GlassCard {
+                Text("Stream profile", color = Mist, fontWeight = FontWeight.Bold)
+                Text(
+                    "These values are sent to the daemon when starting or restarting a screen stream.",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(10.dp))
+                StreamProfile.entries.chunked(2).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { profile ->
+                            val selected = state.streamSettings.profile == profile
+                            if (selected) {
+                                Button(
+                                    onClick = { viewModel.setStreamProfile(profile) },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(profile.label) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { viewModel.setStreamProfile(profile) },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(profile.label) }
+                            }
+                        }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                DiagnosticLine("Max FPS", "${state.streamSettings.maxFps}")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(30, 45, 60).forEach { fps ->
+                        OutlinedButton(
+                            onClick = { viewModel.setStreamMaxFps(fps) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("${fps} fps") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                DiagnosticLine("Max dimension", "${state.streamSettings.maxDimension}px")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1280, 1600, 2400).forEach { dimension ->
+                        OutlinedButton(
+                            onClick = { viewModel.setStreamMaxDimension(dimension) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("${dimension}p") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                DiagnosticLine("JPEG quality", "${state.streamSettings.jpegQuality}")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(52, 70, 86).forEach { quality ->
+                        OutlinedButton(
+                            onClick = { viewModel.setStreamJpegQuality(quality) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("$quality") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Show stream stats overlay", color = Mist, modifier = Modifier.weight(1f))
+                    Switch(checked = state.streamSettings.showStats, onCheckedChange = { viewModel.toggleStreamStats() })
+                }
+            }
+        }
+        item {
+            GlassCard {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Game Mode", color = Mist, fontWeight = FontWeight.Bold)
+                        Text("Fullscreen, 60 fps target, lower JPEG latency, hidden controls.", color = Muted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(
+                        checked = state.remoteScreenGameMode,
+                        onCheckedChange = { viewModel.setRemoteScreenGameMode(it) },
+                    )
+                }
+            }
+        }
+        item {
             Button(onClick = { viewModel.go(Screen.TrustedHosts) }, modifier = Modifier.fillMaxWidth()) {
                 Text("Trusted hosts")
             }
@@ -1199,6 +1374,11 @@ private fun TroubleshootingScreen(state: WaypadUiState, viewModel: WaypadViewMod
                 DiagnosticLine("External keyboard", yesNo(state.capabilities.externalKeyboardSupported))
                 DiagnosticLine("Controller forwarding", yesNo(state.capabilities.externalControllerSupported))
                 DiagnosticLine("External input status", state.externalInputStatus)
+                DiagnosticLine("Route backend", state.capabilities.routeBackend)
+                DiagnosticLine("LAN direct", yesNo(state.capabilities.lanDirectSupported))
+                DiagnosticLine("Public direct", yesNo(state.capabilities.publicDirectSupported))
+                DiagnosticLine("Relay", yesNo(state.capabilities.relaySupported))
+                DiagnosticLine("Connectivity", state.capabilities.connectivityReason)
                 DiagnosticLine("Capture backend", state.capabilities.captureBackend)
                 DiagnosticLine("Capture status", state.capabilities.captureReason)
                 DiagnosticLine("Volume", yesNo(state.capabilities.volume))

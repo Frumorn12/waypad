@@ -169,10 +169,14 @@ class WaypadClient {
         sourceId: String?,
         maxFps: Int = 12,
         jpegQuality: Int = 70,
+        maxWidth: Int? = null,
+        maxHeight: Int? = null,
     ): ScreenStreamInfo = withContext(Dispatchers.IO) {
         val body = JSONObject()
             .put("max_fps", maxFps)
             .put("jpeg_quality", jpegQuality)
+        maxWidth?.let { body.put("max_width", it) }
+        maxHeight?.let { body.put("max_height", it) }
         if (!sourceId.isNullOrBlank()) body.put("source_id", sourceId)
         command("start_screen_stream", body)?.toScreenStreamInfo()
             ?: error("Daemon returned no screen stream information")
@@ -236,6 +240,7 @@ private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
     if (this == null) return CapabilitySummary()
     val input = optJSONObject("input")
     val external = optJSONObject("external_input")
+    val connectivity = optJSONObject("connectivity")
     val capture = optJSONObject("capture")
     val system = optJSONObject("system")
     return CapabilitySummary(
@@ -247,6 +252,11 @@ private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
         externalControllerSupported = external?.optBoolean("controller") ?: false,
         externalInputReason = external?.optString("reason", input?.optString("reason", "No external input data") ?: "No external input data")
             ?: "No external input data",
+        routeBackend = connectivity?.optString("backend", "unknown") ?: "unknown",
+        lanDirectSupported = connectivity?.optBoolean("lan_direct") ?: false,
+        publicDirectSupported = connectivity?.optBoolean("public_direct") ?: false,
+        relaySupported = connectivity?.optBoolean("relay") ?: false,
+        connectivityReason = connectivity?.optString("reason", "No connectivity data") ?: "No connectivity data",
         captureSupported = capture?.optBoolean("supported") ?: false,
         captureReason = capture?.optString("reason", "No capture capability data") ?: "No capture capability data",
         captureBackend = capture?.optString("backend", "unknown") ?: "unknown",

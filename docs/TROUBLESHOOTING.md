@@ -110,6 +110,44 @@ adb logcat -d -v time | grep -E 'orientation_policy|WaypadRemoteScreen'
 
 Entering the Screen tab should log `orientation_policy=full_sensor`. Leaving it should log `orientation_policy=portrait`.
 
+## Game Mode Controls Are Hidden
+
+This is intentional. Game Mode hides the top bar after a short timeout to reduce
+visual clutter and accidental local UI input. Reveal controls with either:
+
+- Tap the small top handle.
+- Press the controller Mode button.
+- Press Start+Select together on a controller.
+
+Those controller shortcuts are reserved for the Android UI and are consumed
+locally so they do not become random clicks or gamepad events on the PC.
+
+## QR Invite Or Mobile Data Connection Fails
+
+Generate a fresh invite:
+
+```bash
+waypad-daemon invite --qr
+```
+
+The payload should contain the Linux LAN IP, not `127.0.0.1`. If automatic
+detection picks the wrong interface, pass the address explicitly:
+
+```bash
+waypad-daemon invite --qr --address 192.168.0.184
+```
+
+For mobile data, Waypad currently supports direct TCP only. Expose the daemon
+port deliberately, then advertise that endpoint:
+
+```bash
+waypad-daemon invite --qr --remote-address your-public-hostname.example
+```
+
+There is no bundled relay, STUN, TURN, or automatic ICE traversal yet. On the
+host, `require_private_lan` must be false for public source addresses, and the
+firewall/router must allow TCP `47771`.
+
 ## Stream Works But Taps Do Not Control The PC
 
 Capture and input are separate host capabilities. The app can show the screen while input is blocked. Check Diagnostics:
@@ -139,6 +177,12 @@ Healthy logs include `device_inventory`, optional `pointer_capture_request`, and
 ## Controller Detected But Does Not Control The PC
 
 Android gamepad/controller detection is implemented, including buttons, sticks, triggers, and hat axes. If Diagnostics shows controller forwarding as unsupported, run `waypad-daemon doctor` on the PC and check `external_input.controller`. Linux controller forwarding uses a daemon-side `uinput` virtual gamepad, so `/dev/uinput` must exist and be writable by the daemon user. Mouse and keyboard forwarding can still work from the same phone even when controller support is blocked by host permissions.
+
+If the controller appears to click Android UI or blink/retrigger, open Remote
+Screen fullscreen or Game Mode before testing. The app forwards controller input
+only while remote capture is active, filters repeat `ACTION_DOWN` events, applies
+axis deadzones, coalesces axis updates, and reserves only Mode or Start+Select
+for local control reveal.
 
 ## APK Build Fails
 

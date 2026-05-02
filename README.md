@@ -15,8 +15,10 @@ This is an MVP Android client. It is buildable as a debug APK and implements the
 - Host key fingerprint validation and pinning.
 - Android Keystore protected trusted-host storage.
 - Low-latency remote touchpad with coalesced pointer movement, tap, double tap, hold-drag, drag lock, buttons, and two-finger scroll gestures.
-- Remote screen mode with source selection, live JPEG frame display, aspect-ratio-aware touch mapping, tap/click, hold-drag, scroll, right click, and quick text input.
+- Remote screen mode with source selection, live JPEG frame display, aspect-ratio-aware touch mapping, tap/click, hold-drag, scroll, right click, quick text input, fullscreen, and Game Mode.
+- Stream profiles for Balanced, Quality, Ultra Low Latency, and Game Mode; these send real FPS, JPEG quality, and maximum-dimension requests to the daemon.
 - External Android mouse, keyboard, and controller forwarding while connected to Pad or Screen mode, subject to host capabilities.
+- QR invite deep links from `waypad-daemon invite --qr` for pairing and direct-public bootstrap.
 - Live keyboard text input and shortcut buttons.
 - Media, volume, brightness, lock, and suspend controls gated by daemon capabilities.
 - Diagnostics screen for Wayland portal limitations.
@@ -105,6 +107,26 @@ waypad-daemon pair-code
 
 7. After connecting, tap "Approve portal" only when the backend is `wayland-portal`, then approve the portal dialog on the Linux host. On `hyprland-ipc`, input is ready after pairing.
 
+QR pairing alternative:
+
+```bash
+waypad-daemon invite --qr
+```
+
+Scan the terminal QR or paste the printed `waypad://invite?...` payload into the
+Discovery screen. The app uses the embedded address, port, fingerprint, and
+one-time pairing code, then still verifies and pins the daemon's signed host key.
+
+For direct mobile-data testing, the daemon can advertise a public endpoint:
+
+```bash
+waypad-daemon invite --qr --remote-address your-public-hostname.example
+```
+
+That requires TCP `47771` to be reachable from the phone and the daemon config to
+allow non-LAN source addresses. Waypad does not bundle a relay, STUN, TURN, or
+automatic ICE traversal yet.
+
 ## Wayland and Hyprland Notes
 
 Waypad is not an X11 automation wrapper. The daemon uses Wayland portal capability detection. On Hyprland, remote input depends on the availability and behavior of `xdg-desktop-portal-hyprland` and `org.freedesktop.portal.RemoteDesktop`.
@@ -119,6 +141,12 @@ If the host reports `hyprland-ipc`, the daemon is using the Hyprland fallback be
 
 Remote Screen mode depends on the daemon's `capture` capability. Standard Wayland capture uses XDG Desktop Portal ScreenCast plus PipeWire. On Hyprland, the daemon can also expose monitor sources through an isolated `grim` fallback. Multi-monitor hosts show selectable sources; portal chooser sources may open a local compositor permission dialog on the PC.
 
+Remote Screen fullscreen is designed to keep the active stream alive while
+system bars and overlays change. Game Mode enables fullscreen, selects a
+low-latency stream profile by default, hides the top controls after a short
+delay, and keeps external input routed to the host. Tap the small top handle or
+press the controller Mode button, or Start+Select, to reveal controls again.
+
 External USB/Bluetooth devices connected to the Android phone are classified with Android `InputDevice` sources. Mouse, touchpad, and keyboard events are forwarded through the daemon's active pointer/keyboard backend. Controller/gamepad devices are detected, normalized, and forwarded when the host daemon reports `external_input.controller = true`; on Linux this requires the daemon user to have access to `/dev/uinput` so the host can expose a virtual gamepad to desktop apps and browser Gamepad APIs.
 
 ## Security Notes
@@ -128,8 +156,9 @@ External USB/Bluetooth devices connected to the Android phone are classified wit
 - The app pins the host fingerprint after pairing.
 - Changed host fingerprints are rejected.
 - Session tokens are encrypted at rest using Android Keystore backed AES-GCM.
-- There is no cloud account, relay, or internet exposure in MVP.
-- The current remote screen media stream is token-protected over LAN but is not separately encrypted like the control channel.
+- There is no cloud account or relay in MVP.
+- Direct-public invites are for explicit user-controlled exposure, VPNs, or port-forward tests; they are not automatic NAT traversal.
+- The current remote screen media stream is token-protected over direct TCP but is not separately encrypted like the control channel.
 
 ## Troubleshooting
 
@@ -165,6 +194,16 @@ Host key changed:
 
 Remove the trusted host in the app and re-pair only if you intentionally rotated or recreated the daemon host identity.
 
+QR invite does not connect:
+
+```bash
+waypad-daemon invite --qr --address <linux-lan-ip>
+```
+
+The payload must not contain `127.0.0.1` unless Android is running on the same
+machine. For mobile data, use `--remote-address` and ensure the host firewall or
+router exposes TCP `47771`.
+
 ## Development
 
 ```bash
@@ -187,9 +226,8 @@ cargo run -- pair-code
 
 ## Roadmap
 
-- QR pairing payload containing IP, port, code, and fingerprint.
 - Better reconnect/backoff behavior.
-- WebRTC/H.264 stream transport after the source/input model stabilizes.
+- WebRTC/H.264 stream transport with ICE/STUN/TURN after the source/input model stabilizes.
 - Customizable shortcuts.
 - Android quick settings tile.
 - Tablet layout.

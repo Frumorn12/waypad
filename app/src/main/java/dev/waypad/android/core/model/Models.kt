@@ -30,6 +30,11 @@ data class CapabilitySummary(
     val externalKeyboardSupported: Boolean = false,
     val externalControllerSupported: Boolean = false,
     val externalInputReason: String = "Not connected",
+    val routeBackend: String = "unknown",
+    val lanDirectSupported: Boolean = false,
+    val publicDirectSupported: Boolean = false,
+    val relaySupported: Boolean = false,
+    val connectivityReason: String = "Not connected",
     val captureSupported: Boolean = false,
     val captureReason: String = "Not connected",
     val captureBackend: String = "unknown",
@@ -62,6 +67,37 @@ data class ScreenStreamInfo(
     val codec: String,
     val transport: String,
     val source: ScreenSource,
+)
+
+enum class StreamProfile(
+    val label: String,
+    val defaultFps: Int,
+    val defaultQuality: Int,
+    val defaultMaxDimension: Int,
+) {
+    Balanced("Balanced", 30, 70, 1600),
+    Quality("Quality", 30, 86, 2400),
+    LowLatency("Ultra low latency", 60, 58, 1280),
+    Game("Game Mode", 60, 52, 1280),
+}
+
+data class StreamSettings(
+    val profile: StreamProfile = StreamProfile.Balanced,
+    val maxFps: Int = StreamProfile.Balanced.defaultFps,
+    val jpegQuality: Int = StreamProfile.Balanced.defaultQuality,
+    val maxDimension: Int = StreamProfile.Balanced.defaultMaxDimension,
+    val showStats: Boolean = true,
+) {
+    val maxWidth: Int
+        get() = maxDimension
+    val maxHeight: Int
+        get() = maxDimension
+}
+
+data class ScreenStreamStats(
+    val estimatedFps: Double = 0.0,
+    val averageKib: Int = 0,
+    val lastFrameAgeMs: Long = 0,
 )
 
 enum class RemoteScreenConnectionState {

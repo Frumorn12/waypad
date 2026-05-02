@@ -42,6 +42,7 @@ class AndroidExternalInputMapper {
             it == ExternalInputDeviceClass.Gamepad || it == ExternalInputDeviceClass.Joystick
         }
         if (isController) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0) return null
             AndroidKeySymMapper.controllerButtonName(event.keyCode)?.let { button ->
                 return ExternalInputEvent.ControllerButton(
                     deviceId = summary.id,
@@ -50,6 +51,7 @@ class AndroidExternalInputMapper {
                     state = state,
                 )
             }
+            return null
         }
         val keysym = AndroidKeySymMapper.keysymFor(event) ?: return null
         if (ExternalInputDeviceClass.Keyboard !in summary.classes) return null
@@ -171,8 +173,12 @@ class AndroidExternalInputMapper {
     }
 
     private fun stableDeviceId(device: InputDevice): String {
-        val descriptor = device.descriptor?.takeIf { it.isNotBlank() } ?: "id-${device.id}"
-        return "android:${device.id}:${descriptor.hashCode().toUInt().toString(16)}"
+        val descriptor = device.descriptor?.takeIf { it.isNotBlank() }
+        return if (descriptor != null) {
+            "android:${descriptor.hashCode().toUInt().toString(16)}"
+        } else {
+            "android:id-${device.id}"
+        }
     }
 
     companion object {

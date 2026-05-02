@@ -17,11 +17,15 @@ import dev.waypad.android.core.model.PointerButton
 import dev.waypad.android.core.model.RemoteScreenConnectionState
 import dev.waypad.android.core.model.ScreenSource
 import dev.waypad.android.core.model.ScreenStreamInfo
+import dev.waypad.android.core.model.ScreenStreamStats
+import dev.waypad.android.core.model.StreamProfile
+import dev.waypad.android.core.model.StreamSettings
 import dev.waypad.android.core.model.TrustedHost
 import dev.waypad.android.core.network.RemoteScreenFrame
 import dev.waypad.android.core.network.RemoteScreenStreamClient
 import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
+import dev.waypad.android.core.network.WaypadInvite
 import dev.waypad.android.core.screen.RemoteScreenSessionEvent
 import dev.waypad.android.core.screen.RemoteScreenSessionMachine
 import dev.waypad.android.core.storage.TrustedHostStore
@@ -78,6 +82,10 @@ data class WaypadUiState(
     val screenStreaming: Boolean = false,
     val screenConnectionState: RemoteScreenConnectionState = RemoteScreenConnectionState.Idle,
     val remoteScreenFullscreen: Boolean = false,
+    val remoteScreenGameMode: Boolean = false,
+    val remoteScreenControlsVisible: Boolean = true,
+    val streamSettings: StreamSettings = StreamSettings(),
+    val screenStreamStats: ScreenStreamStats = ScreenStreamStats(),
     val screenStatus: String = "Screen stream idle",
     val screenError: String? = null,
 )
@@ -107,6 +115,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private var activeInteractionSessionId = 0L
     private var nextInteractionSessionId = 0L
     private var lastExternalUnsupportedNoticeAt = 0L
+    private var streamFrameWindowStartedAt = 0L
+    private var streamFrameWindowCount = 0
+    private var streamFrameWindowBytes = 0L
+    private var handledInvitePayload: String? = null
+    private var lastControllerCaptureNoticeAt = 0L
     private val _state = MutableStateFlow(
         WaypadUiState(trustedHosts = store.load())
     )
@@ -131,6 +144,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     false
                 },
+                remoteScreenControlsVisible = if (screen == Screen.RemoteDisplay) {
+                    it.remoteScreenControlsVisible
+                } else {
+                    true
+                },
             )
         }
         if (!wasCapturingExternalInput && shouldCaptureExternalInput(_state.value)) {
@@ -139,6 +157,42 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         if (screen == Screen.RemoteDisplay && _state.value.screenSources.isEmpty()) {
             loadScreenSources()
         }
+    }
+
+    fun applyInvite(raw: String) {
+        if (handledInvitePayload == raw) {
+            Log.i(TAG, "qr_invite_ignored duplicate=true")
+            return
+        }
+        runCatching { WaypadInvite.parse(raw) }
+            .onSuccess { invite ->
+                handledInvitePayload = raw
+                Log.i(
+                    TAG,
+                    "qr_invite_loaded host=${invite.hostName} address=${invite.address}:${invite.port} route=${invite.route} expires=${invite.expiresAt}",
+                )
+                _state.update {
+                    it.copy(
+                        selectedHost = invite.toDiscoveredHost(),
+                        pairingCode = invite.pairingCode,
+                        manualAddress = invite.address,
+                        manualPort = invite.port.toString(),
+                        screen = Screen.Pairing,
+                        status = "Loaded ${invite.route} invite for ${invite.hostName.ifBlank { invite.address }}",
+                        error = null,
+                    )
+                }
+                pairSelectedHost()
+            }
+            .onFailure { throwable ->
+                Log.w(TAG, "qr_invite_failed message=${throwable.message}", throwable)
+                _state.update {
+                    it.copy(
+                        screen = Screen.Discovery,
+                        error = throwable.message ?: "Could not parse Waypad invite",
+                    )
+                }
+            }
     }
 
     fun updateExternalInputDevices(devices: List<ExternalInputDeviceSummary>) {
@@ -158,19 +212,24 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 externalInputStatus = externalInputSummary(devices),
             )
         }
-        if (shouldCaptureExternalInput(_state.value)) {
+        val updated = _state.value
+        if (shouldCaptureExternalInput(updated)) {
             added.forEach { device ->
-                enqueueExternalDeviceConnected(device)
+                if (shouldForwardExternalDeviceConnected(updated, device)) {
+                    enqueueExternalDeviceConnected(device)
+                }
             }
             removed.forEach { device ->
-                enqueueInput(
-                    RemoteInputCommand.External(
-                        ExternalInputEvent.DeviceDisconnected(
-                            deviceId = device.id,
-                            deviceType = device.classes.primaryTypeForStatus(),
+                if (shouldForwardExternalDeviceConnected(updated, device)) {
+                    enqueueInput(
+                        RemoteInputCommand.External(
+                            ExternalInputEvent.DeviceDisconnected(
+                                deviceId = device.id,
+                                deviceType = device.classes.primaryTypeForStatus(),
+                            ),
                         ),
-                    ),
-                )
+                    )
+                }
             }
         }
     }
@@ -178,7 +237,9 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private fun publishCurrentExternalDevices() {
         val current = _state.value
         if (!shouldCaptureExternalInput(current)) return
-        current.externalInputDevices.forEach(::enqueueExternalDeviceConnected)
+        current.externalInputDevices
+            .filter { shouldForwardExternalDeviceConnected(current, it) }
+            .forEach(::enqueueExternalDeviceConnected)
     }
 
     private fun enqueueExternalDeviceConnected(device: ExternalInputDeviceSummary) {
@@ -196,7 +257,13 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun handleExternalInputEvent(event: ExternalInputEvent): Boolean {
         val current = _state.value
-        if (!shouldCaptureExternalInput(current)) return false
+        if (!shouldForwardExternalInput(current, event)) {
+            if (shouldConsumeControllerLocally(current, event)) {
+                noteControllerWaitingForGameMode(event)
+                return true
+            }
+            return false
+        }
         if (!isExternalInputSupported(current, event)) {
             noteExternalUnsupported(event)
             return true
@@ -220,6 +287,21 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun noteControllerWaitingForGameMode(event: ExternalInputEvent) {
+        val now = System.currentTimeMillis()
+        if (now - lastControllerCaptureNoticeAt < EXTERNAL_UNSUPPORTED_NOTICE_MS) return
+        lastControllerCaptureNoticeAt = now
+        Log.d(
+            TAG,
+            "controller_input_held_for_fullscreen device=${event.deviceId} type=${event.deviceType.wireName}",
+        )
+        _state.update {
+            it.copy(
+                externalInputStatus = "Controller ready. Open Remote Screen fullscreen or Game Mode to forward it to the PC.",
+            )
+        }
+    }
+
     fun setPairingCode(code: String) {
         _state.update { it.copy(pairingCode = code.filter(Char::isDigit).take(6)) }
     }
@@ -234,6 +316,74 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun toggleHaptics() {
         _state.update { it.copy(haptics = !it.haptics) }
+    }
+
+    fun setStreamProfile(profile: StreamProfile) {
+        val restart = _state.value.screenStreaming
+        Log.i(TAG, "stream_settings_profile profile=$profile restart=$restart")
+        _state.update {
+            it.copy(
+                streamSettings = profile.toStreamSettings(showStats = it.streamSettings.showStats),
+            )
+        }
+        if (restart) startScreenStream()
+    }
+
+    fun setStreamMaxFps(fps: Int) {
+        _state.update {
+            it.copy(streamSettings = it.streamSettings.copy(maxFps = fps.coerceIn(5, 60)))
+        }
+    }
+
+    fun setStreamJpegQuality(quality: Int) {
+        _state.update {
+            it.copy(streamSettings = it.streamSettings.copy(jpegQuality = quality.coerceIn(35, 92)))
+        }
+    }
+
+    fun setStreamMaxDimension(dimension: Int) {
+        _state.update {
+            it.copy(streamSettings = it.streamSettings.copy(maxDimension = dimension.coerceIn(720, 3840)))
+        }
+    }
+
+    fun toggleStreamStats() {
+        _state.update {
+            it.copy(streamSettings = it.streamSettings.copy(showStats = !it.streamSettings.showStats))
+        }
+    }
+
+    fun setRemoteScreenGameMode(enabled: Boolean) {
+        val current = _state.value
+        if (current.remoteScreenGameMode == enabled) return
+        Log.i(TAG, "remote_screen_game_mode enabled=$enabled")
+        _state.update {
+            it.copy(
+                remoteScreenGameMode = enabled,
+                remoteScreenFullscreen = if (enabled) true else it.remoteScreenFullscreen,
+                remoteScreenControlsVisible = !enabled,
+                streamSettings = if (enabled) {
+                    StreamProfile.Game.toStreamSettings(showStats = it.streamSettings.showStats)
+                } else {
+                    it.streamSettings
+                },
+            )
+        }
+        if (enabled) publishCurrentExternalDevices()
+        if (current.screenStreaming) startScreenStream()
+    }
+
+    fun setRemoteScreenControlsVisible(visible: Boolean, reason: String = "user") {
+        val current = _state.value
+        if (current.remoteScreenControlsVisible == visible) return
+        Log.i(TAG, "remote_screen_controls visible=$visible reason=$reason")
+        _state.update { it.copy(remoteScreenControlsVisible = visible) }
+    }
+
+    fun revealRemoteScreenControls(reason: String) {
+        if (_state.value.screen == Screen.RemoteDisplay && _state.value.remoteScreenFullscreen) {
+            setRemoteScreenControlsVisible(true, reason)
+        }
     }
 
     fun startDiscovery() {
@@ -549,12 +699,21 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 it.copy(
                     screenStreaming = true,
                     screenFrame = null,
+                    screenStreamStats = ScreenStreamStats(),
                     screenStatus = "Starting screen stream...",
                     screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Start),
                     screenError = null,
                 )
             }
             val selected = _state.value.selectedScreenSourceId
+            val settings = _state.value.streamSettings
+            streamFrameWindowStartedAt = 0L
+            streamFrameWindowCount = 0
+            streamFrameWindowBytes = 0L
+            Log.i(
+                TAG,
+                "stream_settings_apply profile=${settings.profile} fps=${settings.maxFps} quality=${settings.jpegQuality} max=${settings.maxDimension}",
+            )
             var attempt = 0
             while (isActive && screenStreamDesired && attempt < SCREEN_STREAM_MAX_RETRIES) {
                 attempt += 1
@@ -569,7 +728,13 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         delay(500L * attempt)
                     }
-                    val streamInfo = client.startScreenStream(selected, maxFps = 12, jpegQuality = 70)
+                    val streamInfo = client.startScreenStream(
+                        sourceId = selected,
+                        maxFps = settings.maxFps,
+                        jpegQuality = settings.jpegQuality,
+                        maxWidth = settings.maxWidth,
+                        maxHeight = settings.maxHeight,
+                    )
                     info = streamInfo
                     Log.i(TAG, "screen_stream_start attempt=$attempt session=${streamInfo.sessionId} source=${streamInfo.source.id} port=${streamInfo.streamPort}")
                     _state.update {
@@ -593,11 +758,13 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                             transitionScreenSession(RemoteScreenSessionEvent.FirstFrame)
                         }
                         _state.update {
+                            val stats = updateStreamStats(frame)
                             it.copy(
                                 screenFrame = frame,
                                 screenStreaming = true,
                                 screenConnectionState = RemoteScreenConnectionState.Streaming,
-                                screenStatus = "Live ${frame.width}x${frame.height} ${frame.byteCount / 1024} KiB",
+                                screenStreamStats = stats,
+                                screenStatus = streamStatusFor(frame, stats),
                                 screenError = null,
                             )
                         }
@@ -681,6 +848,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 screenStreamInfo = null,
                 screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Close),
                 screenStatus = "Screen stream idle",
+                screenStreamStats = ScreenStreamStats(),
             )
         }
     }
@@ -689,7 +857,13 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         val current = _state.value.remoteScreenFullscreen
         if (current == enabled) return
         Log.i(TAG, "remote_screen_fullscreen enabled=$enabled")
-        _state.update { it.copy(remoteScreenFullscreen = enabled) }
+        _state.update {
+            it.copy(
+                remoteScreenFullscreen = enabled,
+                remoteScreenControlsVisible = if (enabled && it.remoteScreenGameMode) false else true,
+            )
+        }
+        if (enabled) publishCurrentExternalDevices()
     }
 
     private suspend fun stopScreenStreamOnHost(sessionId: String, reason: String) {
@@ -715,6 +889,33 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         remoteScreenPointerMove(x, y)
         pointerButton(button, ButtonState.Pressed)
         pointerButton(button, ButtonState.Released)
+    }
+
+    private fun updateStreamStats(frame: RemoteScreenFrame): ScreenStreamStats {
+        val now = System.currentTimeMillis()
+        if (streamFrameWindowStartedAt == 0L || now - streamFrameWindowStartedAt > 2_000L) {
+            streamFrameWindowStartedAt = now
+            streamFrameWindowCount = 0
+            streamFrameWindowBytes = 0L
+        }
+        streamFrameWindowCount += 1
+        streamFrameWindowBytes += frame.byteCount
+        val elapsed = (now - streamFrameWindowStartedAt).coerceAtLeast(1)
+        val fps = streamFrameWindowCount * 1000.0 / elapsed
+        val averageKib = (streamFrameWindowBytes / streamFrameWindowCount / 1024L).toInt()
+        return ScreenStreamStats(
+            estimatedFps = fps,
+            averageKib = averageKib,
+            lastFrameAgeMs = (now - frame.timestampMs).coerceAtLeast(0L),
+        )
+    }
+
+    private fun streamStatusFor(frame: RemoteScreenFrame, stats: ScreenStreamStats): String {
+        return if (_state.value.streamSettings.showStats) {
+            "Live ${frame.width}x${frame.height} ${stats.estimatedFps.formatFps()} fps ${frame.byteCount / 1024} KiB"
+        } else {
+            "Live ${frame.width}x${frame.height}"
+        }
     }
 
     private fun activeScreenSourceId(): String? =
@@ -964,6 +1165,24 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         Log.v(TAG, "transport_send type=external_pointer_scroll device=${coalesced.deviceId} dx=$dx dy=$dy finish=$finish")
                         sendInput("external_pointer_scroll") { client.externalInput(coalesced) }
                     }
+                    is ExternalInputEvent.ControllerAxis -> {
+                        var latest = external
+                        while (true) {
+                            val next = pollInputCommand() ?: break
+                            val nextEvent = (next as? RemoteInputCommand.External)?.event
+                            if (nextEvent is ExternalInputEvent.ControllerAxis &&
+                                nextEvent.deviceId == external.deviceId &&
+                                nextEvent.axis == external.axis
+                            ) {
+                                latest = nextEvent
+                            } else {
+                                pending.addFirst(next)
+                                break
+                            }
+                        }
+                        Log.v(TAG, "transport_send type=external_controller_axis device=${latest.deviceId} axis=${latest.axis} value=${latest.value}")
+                        sendInput("external_controller_axis") { client.externalInput(latest) }
+                    }
                     else -> {
                         Log.d(TAG, "transport_send type=external_input event=${external::class.simpleName} device=${external.deviceId}")
                         sendInput("external_input") { client.externalInput(external) }
@@ -1018,6 +1237,48 @@ private fun shouldCaptureExternalInput(state: WaypadUiState): Boolean =
     state.connectionState == ConnectionState.Connected &&
         (state.screen == Screen.Remote || state.screen == Screen.RemoteDisplay)
 
+private fun StreamProfile.toStreamSettings(showStats: Boolean): StreamSettings =
+    StreamSettings(
+        profile = this,
+        maxFps = defaultFps,
+        jpegQuality = defaultQuality,
+        maxDimension = defaultMaxDimension,
+        showStats = showStats,
+    )
+
+private fun shouldForwardExternalDeviceConnected(
+    state: WaypadUiState,
+    device: ExternalInputDeviceSummary,
+): Boolean =
+    if (device.classes.any { it == ExternalInputDeviceClass.Gamepad || it == ExternalInputDeviceClass.Joystick }) {
+        shouldForwardControllerInput(state)
+    } else {
+        shouldCaptureExternalInput(state)
+    }
+
+private fun shouldForwardExternalInput(state: WaypadUiState, event: ExternalInputEvent): Boolean =
+    shouldCaptureExternalInput(state) &&
+        (!event.isControllerLike() || shouldForwardControllerInput(state))
+
+private fun shouldForwardControllerInput(state: WaypadUiState): Boolean =
+    state.connectionState == ConnectionState.Connected &&
+        state.screen == Screen.RemoteDisplay &&
+        (state.remoteScreenFullscreen || state.remoteScreenGameMode)
+
+private fun shouldConsumeControllerLocally(state: WaypadUiState, event: ExternalInputEvent): Boolean =
+    state.connectionState == ConnectionState.Connected && event.isControllerLike()
+
+private fun ExternalInputEvent.isControllerLike(): Boolean =
+    when (this) {
+        is ExternalInputEvent.ControllerButton,
+        is ExternalInputEvent.ControllerAxis -> true
+        is ExternalInputEvent.DeviceConnected,
+        is ExternalInputEvent.DeviceDisconnected -> deviceType == ExternalInputDeviceClass.Gamepad ||
+            deviceType == ExternalInputDeviceClass.Joystick
+        else -> deviceType == ExternalInputDeviceClass.Gamepad ||
+            deviceType == ExternalInputDeviceClass.Joystick
+    }
+
 private fun isExternalInputSupported(state: WaypadUiState, event: ExternalInputEvent): Boolean =
     when (event) {
         is ExternalInputEvent.DeviceConnected,
@@ -1055,6 +1316,12 @@ private fun externalInputSummary(devices: List<ExternalInputDeviceSummary>): Str
     } else {
         "External devices: " + devices.joinToString { "${it.name} (${it.displayClasses})" }
     }
+
+private fun Double.formatFps(): String = if (this >= 10.0) {
+    toInt().toString()
+} else {
+    String.format(java.util.Locale.US, "%.1f", this)
+}
 
 private sealed interface RemoteInputCommand {
     val isTerminal: Boolean

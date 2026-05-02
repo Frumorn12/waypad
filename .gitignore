@@ -1,5 +1,6 @@
 # Gradle and Android build outputs
 .gradle/
+.kotlin/
 **/build/
 /captures/
 *.apk
