@@ -33,6 +33,7 @@ pointer_move
 pointer_move_absolute
 pointer_button
 scroll
+external_input
 text
 shortcut
 media
@@ -47,6 +48,38 @@ stop_screen_stream
 ```
 
 Unsupported actions are surfaced as host-provided error messages.
+
+## External Android Input
+
+When the app is connected and the user is in Pad or Screen mode, external Android devices are forwarded with `external_input`:
+
+```json
+{
+  "name": "external_input",
+  "device_id": "android:7:abcd1234",
+  "device_type": "mouse",
+  "event": {
+    "type": "pointer_move",
+    "dx": 12.5,
+    "dy": -3.0
+  }
+}
+```
+
+Supported event types are:
+
+```text
+device_connected
+device_disconnected
+pointer_move
+pointer_button
+pointer_scroll
+keyboard_key
+controller_button
+controller_axis
+```
+
+Keyboard events carry XKB keysyms plus pressed/released state. Controller axes are normalized to `[-1.0, 1.0]` with Android motion-range deadzones applied before transport. The host capability field `external_input.controller` is authoritative; current Wayland portal and Hyprland IPC backends support external mouse/keyboard forwarding but report generic controller injection as unsupported.
 
 ## Remote Screen Stream
 

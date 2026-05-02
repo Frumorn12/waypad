@@ -5,6 +5,9 @@ import android.os.Build
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.waypad.android.core.externalinput.ExternalInputDeviceClass
+import dev.waypad.android.core.externalinput.ExternalInputDeviceSummary
+import dev.waypad.android.core.externalinput.ExternalInputEvent
 import dev.waypad.android.core.input.RemoteGestureMode
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.CapabilitySummary
@@ -66,6 +69,8 @@ data class WaypadUiState(
     val remoteGestureMode: RemoteGestureMode = RemoteGestureMode.Idle,
     val remotePointerCount: Int = 0,
     val remoteInputBacklog: Int = 0,
+    val externalInputDevices: List<ExternalInputDeviceSummary> = emptyList(),
+    val externalInputStatus: String = "No external input devices detected",
     val screenSources: List<ScreenSource> = emptyList(),
     val selectedScreenSourceId: String? = null,
     val screenStreamInfo: ScreenStreamInfo? = null,
@@ -85,6 +90,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         const val INTERACTION_KEEPALIVE_INITIAL_MS = 2_000L
         const val INTERACTION_KEEPALIVE_INTERVAL_MS = 5_000L
         const val SCREEN_STREAM_MAX_RETRIES = 3
+        const val EXTERNAL_UNSUPPORTED_NOTICE_MS = 2_000L
     }
 
     private val discovery = WaypadDiscovery(application)
@@ -100,6 +106,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private val screenSessionMachine = RemoteScreenSessionMachine()
     private var activeInteractionSessionId = 0L
     private var nextInteractionSessionId = 0L
+    private var lastExternalUnsupportedNoticeAt = 0L
     private val _state = MutableStateFlow(
         WaypadUiState(trustedHosts = store.load())
     )
@@ -110,6 +117,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun go(screen: Screen) {
+        val wasCapturingExternalInput = shouldCaptureExternalInput(_state.value)
         val previous = _state.value.screen
         if (previous == Screen.RemoteDisplay && screen != Screen.RemoteDisplay) {
             stopScreenStream()
@@ -125,8 +133,90 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 },
             )
         }
+        if (!wasCapturingExternalInput && shouldCaptureExternalInput(_state.value)) {
+            publishCurrentExternalDevices()
+        }
         if (screen == Screen.RemoteDisplay && _state.value.screenSources.isEmpty()) {
             loadScreenSources()
+        }
+    }
+
+    fun updateExternalInputDevices(devices: List<ExternalInputDeviceSummary>) {
+        val previous = _state.value.externalInputDevices.associateBy { it.id }
+        val current = devices.associateBy { it.id }
+        val added = devices.filter { it.id !in previous }
+        val removed = previous.values.filter { it.id !in current }
+        if (added.isNotEmpty() || removed.isNotEmpty()) {
+            Log.i(
+                TAG,
+                "external_devices_changed added=${added.map { it.name }} removed=${removed.map { it.name }} count=${devices.size}",
+            )
+        }
+        _state.update {
+            it.copy(
+                externalInputDevices = devices,
+                externalInputStatus = externalInputSummary(devices),
+            )
+        }
+        if (shouldCaptureExternalInput(_state.value)) {
+            added.forEach { device ->
+                enqueueExternalDeviceConnected(device)
+            }
+            removed.forEach { device ->
+                enqueueInput(
+                    RemoteInputCommand.External(
+                        ExternalInputEvent.DeviceDisconnected(
+                            deviceId = device.id,
+                            deviceType = device.classes.primaryTypeForStatus(),
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun publishCurrentExternalDevices() {
+        val current = _state.value
+        if (!shouldCaptureExternalInput(current)) return
+        current.externalInputDevices.forEach(::enqueueExternalDeviceConnected)
+    }
+
+    private fun enqueueExternalDeviceConnected(device: ExternalInputDeviceSummary) {
+        enqueueInput(
+            RemoteInputCommand.External(
+                ExternalInputEvent.DeviceConnected(
+                    deviceId = device.id,
+                    deviceType = device.classes.primaryTypeForStatus(),
+                    name = device.name,
+                    classes = device.classes,
+                ),
+            ),
+        )
+    }
+
+    fun handleExternalInputEvent(event: ExternalInputEvent): Boolean {
+        val current = _state.value
+        if (!shouldCaptureExternalInput(current)) return false
+        if (!isExternalInputSupported(current, event)) {
+            noteExternalUnsupported(event)
+            return true
+        }
+        enqueueInput(RemoteInputCommand.External(event))
+        return true
+    }
+
+    private fun noteExternalUnsupported(event: ExternalInputEvent) {
+        val now = System.currentTimeMillis()
+        if (now - lastExternalUnsupportedNoticeAt < EXTERNAL_UNSUPPORTED_NOTICE_MS) return
+        lastExternalUnsupportedNoticeAt = now
+        val label = event.deviceType.unsupportedLabel()
+        val reason = _state.value.capabilities.externalInputReason
+        Log.w(TAG, "external_input_unsupported type=${event.deviceType.wireName} reason=$reason")
+        _state.update {
+            it.copy(
+                externalInputStatus = "$label forwarding unsupported: $reason",
+                status = "$label forwarding unsupported",
+            )
         }
     }
 
@@ -223,6 +313,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         error = null,
                     )
                 }
+                publishCurrentExternalDevices()
             }.onFailure { fail("Pairing failed", it) }
         }
     }
@@ -246,6 +337,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                             status = "Connected to ${host.hostName}",
                         )
                     }
+                    publishCurrentExternalDevices()
                 }
                 .onFailure { fail("Connection failed", it) }
         }
@@ -267,6 +359,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 remoteGestureMode = RemoteGestureMode.Idle,
                 remotePointerCount = 0,
                 remoteInputBacklog = 0,
+                externalInputStatus = externalInputSummary(it.externalInputDevices),
                 screenSources = emptyList(),
                 selectedScreenSourceId = null,
                 screenStreamInfo = null,
@@ -672,6 +765,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                     error = null,
                 )
             }
+            publishCurrentExternalDevices()
         }.isSuccess
     }
 
@@ -826,6 +920,56 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 Log.v(TAG, "transport_send type=ping")
                 sendInput("ping") { client.ping() }
             }
+            is RemoteInputCommand.External -> {
+                when (val external = command.event) {
+                    is ExternalInputEvent.PointerMove -> {
+                        var dx = external.dx
+                        var dy = external.dy
+                        while (true) {
+                            val next = pollInputCommand() ?: break
+                            val nextEvent = (next as? RemoteInputCommand.External)?.event
+                            if (nextEvent is ExternalInputEvent.PointerMove &&
+                                nextEvent.deviceId == external.deviceId
+                            ) {
+                                dx += nextEvent.dx
+                                dy += nextEvent.dy
+                            } else {
+                                pending.addFirst(next)
+                                break
+                            }
+                        }
+                        val coalesced = external.copy(dx = dx, dy = dy)
+                        Log.v(TAG, "transport_send type=external_pointer_move device=${coalesced.deviceId} dx=$dx dy=$dy")
+                        sendInput("external_pointer_move") { client.externalInput(coalesced) }
+                    }
+                    is ExternalInputEvent.PointerScroll -> {
+                        var dx = external.dx
+                        var dy = external.dy
+                        var finish = external.finish
+                        while (true) {
+                            val next = pollInputCommand() ?: break
+                            val nextEvent = (next as? RemoteInputCommand.External)?.event
+                            if (nextEvent is ExternalInputEvent.PointerScroll &&
+                                nextEvent.deviceId == external.deviceId
+                            ) {
+                                dx += nextEvent.dx
+                                dy += nextEvent.dy
+                                finish = finish || nextEvent.finish
+                            } else {
+                                pending.addFirst(next)
+                                break
+                            }
+                        }
+                        val coalesced = external.copy(dx = dx, dy = dy, finish = finish)
+                        Log.v(TAG, "transport_send type=external_pointer_scroll device=${coalesced.deviceId} dx=$dx dy=$dy finish=$finish")
+                        sendInput("external_pointer_scroll") { client.externalInput(coalesced) }
+                    }
+                    else -> {
+                        Log.d(TAG, "transport_send type=external_input event=${external::class.simpleName} device=${external.deviceId}")
+                        sendInput("external_input") { client.externalInput(external) }
+                    }
+                }
+            }
         }
     }
 
@@ -870,17 +1014,61 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 }
 
+private fun shouldCaptureExternalInput(state: WaypadUiState): Boolean =
+    state.connectionState == ConnectionState.Connected &&
+        (state.screen == Screen.Remote || state.screen == Screen.RemoteDisplay)
+
+private fun isExternalInputSupported(state: WaypadUiState, event: ExternalInputEvent): Boolean =
+    when (event) {
+        is ExternalInputEvent.DeviceConnected,
+        is ExternalInputEvent.DeviceDisconnected -> true
+        is ExternalInputEvent.PointerMove,
+        is ExternalInputEvent.PointerButton,
+        is ExternalInputEvent.PointerScroll -> state.capabilities.externalPointerSupported
+        is ExternalInputEvent.KeyboardKey -> state.capabilities.externalKeyboardSupported
+        is ExternalInputEvent.ControllerButton,
+        is ExternalInputEvent.ControllerAxis -> state.capabilities.externalControllerSupported
+    }
+
+private fun ExternalInputDeviceClass.unsupportedLabel(): String = when (this) {
+    ExternalInputDeviceClass.Mouse,
+    ExternalInputDeviceClass.Touchpad -> "external pointer"
+    ExternalInputDeviceClass.Keyboard -> "external keyboard"
+    ExternalInputDeviceClass.Gamepad,
+    ExternalInputDeviceClass.Joystick -> "controller"
+    ExternalInputDeviceClass.Unknown -> "external input"
+}
+
+private fun Set<ExternalInputDeviceClass>.primaryTypeForStatus(): ExternalInputDeviceClass =
+    when {
+        ExternalInputDeviceClass.Mouse in this -> ExternalInputDeviceClass.Mouse
+        ExternalInputDeviceClass.Touchpad in this -> ExternalInputDeviceClass.Touchpad
+        ExternalInputDeviceClass.Gamepad in this -> ExternalInputDeviceClass.Gamepad
+        ExternalInputDeviceClass.Joystick in this -> ExternalInputDeviceClass.Joystick
+        ExternalInputDeviceClass.Keyboard in this -> ExternalInputDeviceClass.Keyboard
+        else -> ExternalInputDeviceClass.Unknown
+    }
+
+private fun externalInputSummary(devices: List<ExternalInputDeviceSummary>): String =
+    if (devices.isEmpty()) {
+        "No external input devices detected"
+    } else {
+        "External devices: " + devices.joinToString { "${it.name} (${it.displayClasses})" }
+    }
+
 private sealed interface RemoteInputCommand {
     val isTerminal: Boolean
         get() = this !is RemoteInputCommand.PointerMove &&
             this !is RemoteInputCommand.PointerMoveAbsolute &&
             this !is RemoteInputCommand.Scroll &&
+            (this !is RemoteInputCommand.External || !this.event.highFrequency) &&
             this !is RemoteInputCommand.Ping
 
     data class PointerMove(val dx: Float, val dy: Float) : RemoteInputCommand
     data class PointerMoveAbsolute(val sourceId: String?, val x: Float, val y: Float) : RemoteInputCommand
     data class Scroll(val dx: Float, val dy: Float) : RemoteInputCommand
     data class PointerButton(val button: dev.waypad.android.core.model.PointerButton, val state: ButtonState) : RemoteInputCommand
+    data class External(val event: ExternalInputEvent) : RemoteInputCommand
     data object ScrollFinish : RemoteInputCommand
     data object ReleasePointerButtons : RemoteInputCommand
     data object Ping : RemoteInputCommand

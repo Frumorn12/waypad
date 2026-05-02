@@ -1,5 +1,7 @@
 package dev.waypad.android.core.network
 
+import dev.waypad.android.core.externalinput.ExternalInputDeviceClass
+import dev.waypad.android.core.externalinput.ExternalInputEvent
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.CapabilitySummary
 import dev.waypad.android.core.model.PointerButton
@@ -144,6 +146,15 @@ class WaypadClient {
         command("clipboard_set", JSONObject().put("text", text))
     }
 
+    suspend fun externalInput(event: ExternalInputEvent) {
+        val body = event.toJson()
+        if (event.highFrequency) {
+            commandOneWay("external_input", body)
+        } else {
+            command("external_input", body)
+        }
+    }
+
     suspend fun capabilities(): CapabilitySummary = withContext(Dispatchers.IO) {
         command("get_capabilities")?.toCapabilitySummary() ?: CapabilitySummary()
     }
@@ -224,12 +235,18 @@ class WaypadClient {
 private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
     if (this == null) return CapabilitySummary()
     val input = optJSONObject("input")
+    val external = optJSONObject("external_input")
     val capture = optJSONObject("capture")
     val system = optJSONObject("system")
     return CapabilitySummary(
         inputSupported = input?.optBoolean("supported") ?: false,
         inputReason = input?.optString("reason", "No input capability data") ?: "No input capability data",
         inputBackend = input?.optString("backend", "unknown") ?: "unknown",
+        externalPointerSupported = external?.optBoolean("pointer") ?: (input?.optBoolean("supported") ?: false),
+        externalKeyboardSupported = external?.optBoolean("keyboard") ?: (input?.optBoolean("supported") ?: false),
+        externalControllerSupported = external?.optBoolean("controller") ?: false,
+        externalInputReason = external?.optString("reason", input?.optString("reason", "No external input data") ?: "No external input data")
+            ?: "No external input data",
         captureSupported = capture?.optBoolean("supported") ?: false,
         captureReason = capture?.optString("reason", "No capture capability data") ?: "No capture capability data",
         captureBackend = capture?.optString("backend", "unknown") ?: "unknown",
@@ -255,6 +272,47 @@ private fun JSONObject.toScreenSource(): ScreenSource = ScreenSource(
     scale = optDouble("scale", 1.0),
     focused = optBoolean("focused"),
 )
+
+private fun ExternalInputEvent.toJson(): JSONObject {
+    val body = JSONObject()
+        .put("device_id", deviceId)
+        .put("device_type", deviceType.wireName)
+    val event = when (this) {
+        is ExternalInputEvent.DeviceConnected -> JSONObject()
+            .put("type", "device_connected")
+            .put("name", name)
+            .put("classes", JSONArray(classes.map(ExternalInputDeviceClass::wireName)))
+        is ExternalInputEvent.DeviceDisconnected -> JSONObject()
+            .put("type", "device_disconnected")
+        is ExternalInputEvent.PointerMove -> JSONObject()
+            .put("type", "pointer_move")
+            .put("dx", dx.toDouble())
+            .put("dy", dy.toDouble())
+        is ExternalInputEvent.PointerButton -> JSONObject()
+            .put("type", "pointer_button")
+            .put("button", button.wireName)
+            .put("state", state.wireName)
+        is ExternalInputEvent.PointerScroll -> JSONObject()
+            .put("type", "pointer_scroll")
+            .put("dx", dx.toDouble())
+            .put("dy", dy.toDouble())
+            .put("finish", finish)
+        is ExternalInputEvent.KeyboardKey -> JSONObject()
+            .put("type", "keyboard_key")
+            .put("keysym", keysym)
+            .put("state", state.wireName)
+            .put("repeat", repeat)
+        is ExternalInputEvent.ControllerButton -> JSONObject()
+            .put("type", "controller_button")
+            .put("button", button)
+            .put("state", state.wireName)
+        is ExternalInputEvent.ControllerAxis -> JSONObject()
+            .put("type", "controller_axis")
+            .put("axis", axis)
+            .put("value", value.toDouble())
+    }
+    return body.put("event", event)
+}
 
 private fun JSONObject.toScreenStreamInfo(): ScreenStreamInfo = ScreenStreamInfo(
     sessionId = getString("session_id"),

@@ -122,8 +122,11 @@ import kotlin.math.hypot
 fun WaypadApp(viewModel: WaypadViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val remoteFullscreen = state.screen == Screen.RemoteDisplay && state.remoteScreenFullscreen
+    val externalPointerCapture = state.connectionState == ConnectionState.Connected &&
+        (state.screen == Screen.Remote || state.screen == Screen.RemoteDisplay)
     RemoteScreenOrientationEffect(state.screen == Screen.RemoteDisplay)
     FullscreenSystemUiEffect(remoteFullscreen)
+    ExternalPointerCaptureEffect(externalPointerCapture)
     BackHandler(remoteFullscreen) {
         viewModel.setRemoteScreenFullscreen(false)
     }
@@ -164,6 +167,27 @@ fun WaypadApp(viewModel: WaypadViewModel) {
                         Screen.Troubleshooting -> TroubleshootingScreen(state, viewModel)
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExternalPointerCaptureEffect(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(enabled, view) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (enabled) {
+                Log.i("WaypadExternalInput", "pointer_capture_request")
+                view.requestPointerCapture()
+            } else if (view.hasPointerCapture()) {
+                Log.i("WaypadExternalInput", "pointer_capture_release")
+                view.releasePointerCapture()
+            }
+        }
+        onDispose {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && view.hasPointerCapture()) {
+                view.releasePointerCapture()
             }
         }
     }
@@ -1171,12 +1195,28 @@ private fun TroubleshootingScreen(state: WaypadUiState, viewModel: WaypadViewMod
                 DiagnosticLine("Connection", state.connectionState.name)
                 DiagnosticLine("Input backend", state.capabilities.inputBackend)
                 DiagnosticLine("Input status", state.capabilities.inputReason)
+                DiagnosticLine("External pointer", yesNo(state.capabilities.externalPointerSupported))
+                DiagnosticLine("External keyboard", yesNo(state.capabilities.externalKeyboardSupported))
+                DiagnosticLine("Controller forwarding", yesNo(state.capabilities.externalControllerSupported))
+                DiagnosticLine("External input status", state.externalInputStatus)
                 DiagnosticLine("Capture backend", state.capabilities.captureBackend)
                 DiagnosticLine("Capture status", state.capabilities.captureReason)
                 DiagnosticLine("Volume", yesNo(state.capabilities.volume))
                 DiagnosticLine("Brightness", yesNo(state.capabilities.brightness))
                 DiagnosticLine("Clipboard", yesNo(state.capabilities.clipboard))
                 DiagnosticLine("Lock", yesNo(state.capabilities.lock))
+            }
+        }
+        item {
+            GlassCard {
+                Text("Android input devices", color = Mist, fontWeight = FontWeight.Bold)
+                if (state.externalInputDevices.isEmpty()) {
+                    Text("No external keyboard, mouse, touchpad, or controller detected by Android.", color = Muted)
+                } else {
+                    state.externalInputDevices.forEach { device ->
+                        DiagnosticLine(device.name, device.displayClasses)
+                    }
+                }
             }
         }
         item {

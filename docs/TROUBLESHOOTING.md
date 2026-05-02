@@ -120,6 +120,26 @@ Capture and input are separate host capabilities. The app can show the screen wh
 
 Touches in black bars around the video are intentionally ignored because they do not map to desktop pixels.
 
+## External Mouse Or Keyboard Connected To Android Does Nothing
+
+External device forwarding is active while connected in Pad or Screen mode. Open Diagnostics and check:
+
+- Android input devices: the phone must report the mouse, keyboard, touchpad, or controller.
+- External pointer / External keyboard: the host must report support through the daemon capability model.
+- Input backend: `wayland-portal` needs portal approval; `hyprland-ipc` works without a portal prompt on Hyprland.
+
+Collect Android logs:
+
+```bash
+adb logcat -d -v time | grep -E 'WaypadExternalInput|external_input'
+```
+
+Healthy logs include `device_inventory`, optional `pointer_capture_request`, and `transport_send type=external_*` while the remote screen or pad is active.
+
+## Controller Detected But Does Not Control The PC
+
+Android gamepad/controller detection is implemented, including buttons, sticks, triggers, and hat axes. Generic virtual gamepad injection is not currently exposed by the Wayland RemoteDesktop portal or the Hyprland IPC fallback, so Waypad reports controller forwarding as unsupported unless a future host backend adds it. This is expected; mouse and keyboard forwarding can still work from the same phone.
+
 ## APK Build Fails
 
 Confirm JDK and Android SDK:
