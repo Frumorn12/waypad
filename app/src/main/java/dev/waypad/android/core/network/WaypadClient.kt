@@ -255,6 +255,7 @@ private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
         routeBackend = connectivity?.optString("backend", "unknown") ?: "unknown",
         lanDirectSupported = connectivity?.optBoolean("lan_direct") ?: false,
         publicDirectSupported = connectivity?.optBoolean("public_direct") ?: false,
+        publicPairingAllowed = connectivity?.optBoolean("public_pairing_allowed") ?: false,
         relaySupported = connectivity?.optBoolean("relay") ?: false,
         connectivityReason = connectivity?.optString("reason", "No connectivity data") ?: "No connectivity data",
         captureSupported = capture?.optBoolean("supported") ?: false,

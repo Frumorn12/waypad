@@ -172,7 +172,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 pendingInvite = invite
                 Log.i(
                     TAG,
-                    "qr_invite_loaded host=${invite.hostName} endpoints=${invite.endpoints.joinToString { "${it.route}:${it.address}:${it.port}" }} route=${invite.route} expires=${invite.expiresAt}",
+                    "qr_invite_loaded host=${invite.hostName} endpoints=${invite.endpoints.joinToString { "${it.route}:${it.address}:${it.port}" }} route=${invite.route} policy=${invite.policy} publicPairingAllowed=${invite.publicPairingAllowed} expires=${invite.expiresAt}",
                 )
                 _state.update {
                     it.copy(
@@ -479,6 +479,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         pairingCode: String,
     ): Result<Pair<TrustedHost, CapabilitySummary>> {
         var lastFailure: Throwable? = null
+        var sawPolicyRejection = false
         for ((index, candidate) in candidates.distinctBy { "${it.address}:${it.port}" }.withIndex()) {
             Log.i(
                 TAG,
@@ -495,14 +496,34 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (result.isSuccess) return result
             lastFailure = result.exceptionOrNull()
-            Log.w(
-                TAG,
-                "qr_invite_connect_failed index=$index address=${candidate.address}:${candidate.port} message=${lastFailure?.message}",
-                lastFailure,
-            )
+            val msg = lastFailure?.message.orEmpty()
+            if (msg.contains("public_pairing_denied", ignoreCase = true) ||
+                msg.contains("blocks pairing from public networks", ignoreCase = true)
+            ) {
+                sawPolicyRejection = true
+                Log.w(
+                    TAG,
+                    "qr_invite_policy_rejected index=$index address=${candidate.address}:${candidate.port} message=$msg",
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "qr_invite_connect_failed index=$index address=${candidate.address}:${candidate.port} message=${lastFailure?.message}",
+                    lastFailure,
+                )
+            }
             _state.update {
                 it.copy(status = "Invite endpoint ${candidate.address}:${candidate.port} failed; trying fallback...")
             }
+        }
+        if (sawPolicyRejection) {
+            return Result.failure(
+                IllegalStateException(
+                    "Remote pairing blocked by host policy. " +
+                        "The host admin must set allow_public_pairing=true or require_private_lan=false " +
+                        "in ~/.config/waypad-daemon/config.json, then restart the daemon.",
+                ),
+            )
         }
         return Result.failure(lastFailure ?: IllegalStateException("No usable invite endpoints"))
     }

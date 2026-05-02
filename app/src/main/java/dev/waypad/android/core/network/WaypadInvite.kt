@@ -12,6 +12,8 @@ data class WaypadInvite(
     val pairingCode: String,
     val expiresAt: Long,
     val route: String,
+    val policy: String,
+    val publicPairingAllowed: Boolean,
     val endpoints: List<WaypadInviteEndpoint> = listOf(WaypadInviteEndpoint(address, port, route)),
 ) {
     fun toDiscoveredHost(): DiscoveredHost = DiscoveredHost(
@@ -71,6 +73,8 @@ data class WaypadInvite(
                 pairingCode = code,
                 expiresAt = query["expires"]?.toLongOrNull() ?: 0L,
                 route = query["route"].orEmpty().ifBlank { primary.route },
+                policy = query["policy"].orEmpty().ifBlank { primary.route },
+                publicPairingAllowed = query["public_pairing_allowed"]?.toBoolean() ?: false,
                 endpoints = endpoints,
             )
         }

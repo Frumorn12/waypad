@@ -33,6 +33,7 @@ data class CapabilitySummary(
     val routeBackend: String = "unknown",
     val lanDirectSupported: Boolean = false,
     val publicDirectSupported: Boolean = false,
+    val publicPairingAllowed: Boolean = false,
     val relaySupported: Boolean = false,
     val connectivityReason: String = "Not connected",
     val captureSupported: Boolean = false,

@@ -144,20 +144,39 @@ port deliberately, then advertise that endpoint:
 waypad-daemon invite --qr --remote-address your-public-hostname.example
 ```
 
-There is no bundled relay, STUN, TURN, or automatic ICE traversal yet. On the
-host, `require_private_lan` must be false for public source addresses, and the
+There is no bundled relay, STUN, TURN, or automatic ICE traversal yet. The
 firewall/router must allow TCP `47771`.
+
+### Pairing policy
+
+The daemon now enforces pairing policy at the protocol level instead of silently
+dropping TCP connections:
+
+- `require_private_lan=true` (default): **already-paired devices can reconnect from any network**, but **new pairing from public IPs is blocked**.
+- To allow **new pairing from mobile data / public IPs**, set `allow_public_pairing=true` in the daemon config (recommended), or set `require_private_lan=false`.
+- The QR includes a `policy` field so the Android app knows whether remote pairing
+is expected to work.
+
+If the Android app shows **"Remote pairing blocked by host policy"**, the daemon
+is correctly rejecting a public pairing attempt. To fix it on the host:
+
+```bash
+# Recommended: allow public pairing but keep LAN-only restriction for reconnection
+# Edit ~/.config/waypad-daemon/config.json and set:
+#   "allow_public_pairing": true
+systemctl --user restart waypad-daemon
+```
 
 When an invite contains both `remote_address` and `lan_address`, Android logs
 each endpoint attempt:
 
 ```bash
-adb logcat -d -v time | grep -E 'qr_invite_connect_attempt|qr_invite_connect_failed'
+adb logcat -d -v time | grep -E 'qr_invite_connect_attempt|qr_invite_connect_failed|qr_invite_policy_rejected'
 ```
 
 This is the expected fallback behavior. If every candidate fails, the advertised
 public hostname/IP is not reachable from the current phone network or the daemon
-is still rejecting public source addresses.
+is rejecting the pairing attempt because of policy.
 
 ## QR Scanner Does Not Open The Camera
 
