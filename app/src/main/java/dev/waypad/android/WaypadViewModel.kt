@@ -14,7 +14,6 @@ import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
 import dev.waypad.android.core.storage.TrustedHostStore
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -212,6 +211,16 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         launchCommand(null) { client.pointerButton(button, state) }
     }
 
+    fun releasePointerButtons() {
+        pendingPointerDx = 0f
+        pendingPointerDy = 0f
+        launchQuiet {
+            client.pointerButton(PointerButton.Left, ButtonState.Released)
+            client.pointerButton(PointerButton.Right, ButtonState.Released)
+            client.pointerButton(PointerButton.Middle, ButtonState.Released)
+        }
+    }
+
     fun scroll(dx: Float, dy: Float, finish: Boolean = false) {
         if (_state.value.capabilities.inputBackend == "hyprland-hyprctl") {
             if (!finish) {
@@ -292,7 +301,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private suspend fun drainPointerMoves() {
-        while (abs(pendingPointerDx) + abs(pendingPointerDy) > 0.1f) {
+        while (abs(pendingPointerDx) + abs(pendingPointerDy) > 0.01f) {
             val dx = pendingPointerDx
             val dy = pendingPointerDy
             pendingPointerDx = 0f
@@ -303,7 +312,6 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         fail("Input failed", throwable)
                     }
                 }
-            delay(8)
         }
     }
 

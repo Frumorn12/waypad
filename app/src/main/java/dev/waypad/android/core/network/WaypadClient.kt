@@ -12,7 +12,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class WaypadClient {
+    private companion object {
+        const val MAX_ONE_WAY_POINTER_RESPONSES = 4
+    }
+
     private val transportMutex = Mutex()
+    private val oneWayResponseIds = ArrayDeque<String>()
     private var channel: SecureChannel? = null
 
     suspend fun pair(
@@ -23,6 +28,7 @@ class WaypadClient {
         expectedFingerprint: String? = null,
     ): Pair<TrustedHost, CapabilitySummary> = withContext(Dispatchers.IO) { transportMutex.withLock {
         channel?.close()
+        oneWayResponseIds.clear()
         val ch = SecureChannel.connect(address, port, expectedFingerprint)
         val id = requestId()
         ch.send(
@@ -51,6 +57,7 @@ class WaypadClient {
 
     suspend fun connect(host: TrustedHost): CapabilitySummary = withContext(Dispatchers.IO) { transportMutex.withLock {
         channel?.close()
+        oneWayResponseIds.clear()
         val ch = SecureChannel.connect(host.address, host.port, host.fingerprint)
         val id = requestId()
         ch.send(
@@ -71,7 +78,7 @@ class WaypadClient {
     }
 
     suspend fun pointerMove(dx: Float, dy: Float) {
-        command("pointer_move", JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()))
+        commandOneWay("pointer_move", JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()))
     }
 
     suspend fun pointerButton(button: PointerButton, state: ButtonState) {
@@ -120,6 +127,7 @@ class WaypadClient {
     fun close() {
         channel?.close()
         channel = null
+        oneWayResponseIds.clear()
     }
 
     private suspend fun command(name: String, body: JSONObject = JSONObject()): JSONObject? = withContext(Dispatchers.IO) { transportMutex.withLock {
@@ -130,15 +138,39 @@ class WaypadClient {
         ch.receiveResponse(id).optJSONObject("data")
     } }
 
-    private fun SecureChannel.receiveResponse(id: String): JSONObject {
-        val response = receive()
-        check(response.getString("type") == "response") { "Unexpected server message" }
-        check(response.getString("request_id") == id) { "Response ID mismatch" }
-        if (!response.getBoolean("ok")) {
-            val error = response.getJSONObject("error")
-            throw IllegalStateException(error.getString("message"))
+    private suspend fun commandOneWay(name: String, body: JSONObject = JSONObject()) = withContext(Dispatchers.IO) { transportMutex.withLock {
+        val ch = channel ?: error("Not connected")
+        val id = requestId()
+        val command = JSONObject(body.toString()).put("name", name)
+        ch.send(JSONObject().put("type", "command").put("request_id", id).put("command", command))
+        oneWayResponseIds.addLast(id)
+        while (oneWayResponseIds.size > MAX_ONE_WAY_POINTER_RESPONSES) {
+            ch.receiveResponse(oneWayResponseIds.removeFirst())
         }
-        return response
+    } }
+
+    private fun SecureChannel.receiveResponse(id: String): JSONObject {
+        while (true) {
+            val response = receive()
+            check(response.getString("type") == "response") { "Unexpected server message" }
+            val responseId = response.getString("request_id")
+            if (responseId != id) {
+                if (oneWayResponseIds.remove(responseId)) {
+                    if (!response.getBoolean("ok")) {
+                        val error = response.getJSONObject("error")
+                        throw IllegalStateException(error.getString("message"))
+                    }
+                    continue
+                }
+                error("Response ID mismatch")
+            }
+            if (!response.getBoolean("ok")) {
+                val error = response.getJSONObject("error")
+                throw IllegalStateException(error.getString("message"))
+            }
+            oneWayResponseIds.remove(responseId)
+            return response
+        }
     }
 }
 

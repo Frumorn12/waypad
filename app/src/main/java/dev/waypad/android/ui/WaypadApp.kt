@@ -9,7 +9,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,12 +70,15 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.waypad.android.Screen
 import dev.waypad.android.WaypadUiState
@@ -369,8 +371,8 @@ private fun PairingScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
 @Composable
 private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
     val haptics = LocalHapticFeedback.current
+    val tapSlop = with(LocalDensity.current) { 8.dp.toPx() }
     var dragLocked by remember { mutableStateOf(false) }
-    var longPressDragActive by remember { mutableStateOf(false) }
     val currentDragLocked by rememberUpdatedState(dragLocked)
 
     fun setDragLocked(enabled: Boolean) {
@@ -382,14 +384,21 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
             viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
         }
         dragLocked = enabled
-        longPressDragActive = false
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+        setDragLocked(false)
+        viewModel.releasePointerButtons()
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        setDragLocked(false)
+        viewModel.releasePointerButtons()
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            if (currentDragLocked) {
-                viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-            }
+            viewModel.releasePointerButtons()
         }
     }
 
@@ -409,55 +418,53 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 .background(Brush.verticalGradient(listOf(Color(0xFF1B211B), Color(0xFF101410))))
                 .border(1.dp, Line, RoundedCornerShape(34.dp))
                 .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-                        },
-                        onDoubleTap = {
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-                        },
-                        onLongPress = {
-                            if (!dragLocked) {
-                                longPressDragActive = true
-                                if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
-                            }
-                        },
-                    )
-                }
-                .pointerInput(dragLocked) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false)
-                        var lastCentroid: Offset? = null
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val pressed = event.changes.filter { it.pressed }
-                            if (pressed.isEmpty()) break
-                            val centroid = Offset(
-                                pressed.sumOf { it.position.x.toDouble() }.toFloat() / pressed.size,
-                                pressed.sumOf { it.position.y.toDouble() }.toFloat() / pressed.size,
-                            )
-                            val previous = lastCentroid
-                            if (previous != null) {
-                                val delta = centroid - previous
+                    try {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var lastCentroid = down.position
+                            var maxPointerCount = 1
+                            var movedBeyondTap = false
+                            var scrollActive = false
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.isEmpty()) break
+
+                                maxPointerCount = maxOf(maxPointerCount, pressed.size)
+                                val centroid = Offset(
+                                    pressed.sumOf { it.position.x.toDouble() }.toFloat() / pressed.size,
+                                    pressed.sumOf { it.position.y.toDouble() }.toFloat() / pressed.size,
+                                )
+                                val delta = centroid - lastCentroid
+                                val total = centroid - down.position
+                                if (abs(total.x) + abs(total.y) > tapSlop) {
+                                    movedBeyondTap = true
+                                }
+
                                 if (pressed.size >= 2) {
-                                    viewModel.scroll(0f, delta.y)
-                                } else if (abs(delta.x) + abs(delta.y) > 0.6f) {
+                                    scrollActive = true
+                                    if (abs(delta.y) > 0.05f) viewModel.scroll(0f, delta.y)
+                                } else if (abs(delta.x) + abs(delta.y) > 0.05f) {
                                     viewModel.pointerMove(delta.x, delta.y)
                                 }
+
+                                lastCentroid = centroid
                             }
-                            lastCentroid = centroid
+
+                            if (scrollActive) viewModel.scroll(0f, 0f, finish = true)
+                            if (!movedBeyondTap && maxPointerCount == 1) {
+                                if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                                viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                            }
+                            if (!currentDragLocked) {
+                                viewModel.releasePointerButtons()
+                            }
                         }
+                    } finally {
                         viewModel.scroll(0f, 0f, finish = true)
-                        if (longPressDragActive && !dragLocked) {
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-                            longPressDragActive = false
-                        }
+                        viewModel.releasePointerButtons()
                     }
                 }
         ) {
@@ -470,7 +477,7 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 Icon(Icons.Rounded.Mouse, contentDescription = null, tint = Acid, modifier = Modifier.size(42.dp))
                 Spacer(Modifier.height(10.dp))
                 Text("Touchpad", color = Mist, fontWeight = FontWeight.Bold)
-                Text("Tap, double tap, hold-drag, two-finger scroll", color = Muted, style = MaterialTheme.typography.bodySmall)
+                Text("Tap, double tap, drag lock, two-finger scroll", color = Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
         Spacer(Modifier.height(12.dp))
