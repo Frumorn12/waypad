@@ -77,6 +77,15 @@ class WaypadClient {
         command("prepare_input")
     }
 
+    suspend fun ping() {
+        withContext(Dispatchers.IO) { transportMutex.withLock {
+            val ch = channel ?: error("Not connected")
+            val id = requestId()
+            ch.send(JSONObject().put("type", "ping").put("request_id", id))
+            ch.receiveResponse(id)
+        } }
+    }
+
     suspend fun pointerMove(dx: Float, dy: Float) {
         commandOneWay("pointer_move", JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()))
     }
@@ -89,7 +98,12 @@ class WaypadClient {
     }
 
     suspend fun scroll(dx: Float, dy: Float, finish: Boolean = false) {
-        command("scroll", JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()).put("finish", finish))
+        val body = JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()).put("finish", finish)
+        if (finish) {
+            command("scroll", body)
+        } else {
+            commandOneWay("scroll", body)
+        }
     }
 
     suspend fun text(text: String) {

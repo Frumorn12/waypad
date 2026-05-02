@@ -1,5 +1,6 @@
 package dev.waypad.android.ui
 
+import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
@@ -67,7 +68,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
@@ -80,16 +84,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.waypad.android.BuildConfig
 import dev.waypad.android.Screen
 import dev.waypad.android.WaypadUiState
 import dev.waypad.android.WaypadViewModel
 import dev.waypad.android.R
+import dev.waypad.android.core.input.RemoteGestureAction
+import dev.waypad.android.core.input.RemoteGestureMode
+import dev.waypad.android.core.input.RemotePointer
+import dev.waypad.android.core.input.RemoteTouchpadGestureMachine
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.ConnectionState
 import dev.waypad.android.core.model.DiscoveredHost
 import dev.waypad.android.core.model.PointerButton
 import dev.waypad.android.core.model.TrustedHost
-import kotlin.math.abs
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun WaypadApp(viewModel: WaypadViewModel) {
@@ -374,6 +383,19 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
     val tapSlop = with(LocalDensity.current) { 8.dp.toPx() }
     var dragLocked by remember { mutableStateOf(false) }
     val currentDragLocked by rememberUpdatedState(dragLocked)
+    val currentHapticsEnabled by rememberUpdatedState(state.haptics)
+    val padActive = state.remoteInputSessionActive
+    val scrollMode = state.remoteGestureMode == RemoteGestureMode.TwoFingerScroll
+    val padBorder = when {
+        scrollMode -> Color(0xFF9ED8FF).copy(alpha = 0.85f)
+        padActive -> Acid.copy(alpha = 0.75f)
+        else -> Line
+    }
+    val padGradient = when {
+        scrollMode -> listOf(Color(0xFF182527), Color(0xFF101716))
+        padActive -> listOf(Color(0xFF20281E), Color(0xFF101610))
+        else -> listOf(Color(0xFF1B211B), Color(0xFF101410))
+    }
 
     fun setDragLocked(enabled: Boolean) {
         if (dragLocked == enabled) return
@@ -384,6 +406,40 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
             viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
         }
         dragLocked = enabled
+    }
+
+    fun handleGestureAction(action: RemoteGestureAction) {
+        when (action) {
+            is RemoteGestureAction.Move -> viewModel.pointerMove(action.dx, action.dy)
+            is RemoteGestureAction.Scroll -> viewModel.scroll(action.dx, action.dy)
+            RemoteGestureAction.FinishScroll -> viewModel.scroll(0f, 0f, finish = true)
+            RemoteGestureAction.Click -> {
+                if (!currentDragLocked) {
+                    if (currentHapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                    viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                }
+            }
+            RemoteGestureAction.DragStart -> {
+                if (!currentDragLocked) {
+                    if (currentHapticsEnabled) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                }
+            }
+            RemoteGestureAction.DragEnd -> {
+                if (!currentDragLocked) {
+                    viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                }
+            }
+            is RemoteGestureAction.ModeChanged -> {
+                if (action.from != action.to) {
+                    Log.d("WaypadTouchpad", "gesture_transition from=${action.from.label} to=${action.to.label} reason=${action.reason}")
+                    if (action.to == RemoteGestureMode.TwoFingerScroll && currentHapticsEnabled) {
+                        haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                }
+            }
+        }
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
@@ -415,56 +471,79 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 .weight(1f)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(34.dp))
-                .background(Brush.verticalGradient(listOf(Color(0xFF1B211B), Color(0xFF101410))))
-                .border(1.dp, Line, RoundedCornerShape(34.dp))
+                .background(Brush.verticalGradient(padGradient))
+                .border(1.dp, padBorder, RoundedCornerShape(34.dp))
                 .pointerInput(Unit) {
-                    try {
-                        awaitEachGesture {
+                    awaitEachGesture {
+                        val gesture = RemoteTouchpadGestureMachine(
+                            tapSlopPx = tapSlop,
+                            longPressDragEnabled = !currentDragLocked,
+                        )
+                        var sessionId = 0L
+                        var sessionStarted = false
+                        try {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            var lastCentroid = down.position
-                            var maxPointerCount = 1
-                            var movedBeyondTap = false
-                            var scrollActive = false
+                            down.consume()
+                            sessionId = viewModel.beginRemoteInteraction()
+                            sessionStarted = true
+                            Log.d("WaypadTouchpad", "pointer_down id=${down.id.value} x=${down.position.x} y=${down.position.y}")
+                            gesture.begin(
+                                RemotePointer(down.id.value, down.position.x, down.position.y),
+                                down.uptimeMillis,
+                            ).forEach(::handleGestureAction)
+                            viewModel.updateRemoteGesture(gesture.mode, 1)
 
+                            var moveLogCounter = 0
                             while (true) {
                                 val event = awaitPointerEvent()
-                                val pressed = event.changes.filter { it.pressed }
+                                event.changes.forEach { change ->
+                                    when {
+                                        change.changedToDown() -> Log.d(
+                                            "WaypadTouchpad",
+                                            "pointer_down id=${change.id.value} x=${change.position.x} y=${change.position.y}",
+                                        )
+                                        change.changedToUp() -> Log.d("WaypadTouchpad", "pointer_up id=${change.id.value}")
+                                        change.positionChanged() && change.pressed -> {
+                                            moveLogCounter += 1
+                                            if (moveLogCounter % 24 == 0) {
+                                                Log.v(
+                                                    "WaypadTouchpad",
+                                                    "pointer_move sample_count=$moveLogCounter pointers=${event.changes.count { it.pressed }}",
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val pressed = event.changes
+                                    .filter { it.pressed }
+                                    .map { RemotePointer(it.id.value, it.position.x, it.position.y) }
+                                gesture.update(
+                                    activePointers = pressed,
+                                    timeMillis = event.changes.maxOfOrNull { it.uptimeMillis } ?: down.uptimeMillis,
+                                ).forEach(::handleGestureAction)
+                                viewModel.updateRemoteGesture(gesture.mode, pressed.size)
+
+                                event.changes.forEach { change ->
+                                    if (change.changedToDown() || change.changedToUp() || change.positionChanged()) {
+                                        change.consume()
+                                    }
+                                }
                                 if (pressed.isEmpty()) break
-
-                                maxPointerCount = maxOf(maxPointerCount, pressed.size)
-                                val centroid = Offset(
-                                    pressed.sumOf { it.position.x.toDouble() }.toFloat() / pressed.size,
-                                    pressed.sumOf { it.position.y.toDouble() }.toFloat() / pressed.size,
-                                )
-                                val delta = centroid - lastCentroid
-                                val total = centroid - down.position
-                                if (abs(total.x) + abs(total.y) > tapSlop) {
-                                    movedBeyondTap = true
-                                }
-
-                                if (pressed.size >= 2) {
-                                    scrollActive = true
-                                    if (abs(delta.y) > 0.05f) viewModel.scroll(0f, delta.y)
-                                } else if (abs(delta.x) + abs(delta.y) > 0.05f) {
-                                    viewModel.pointerMove(delta.x, delta.y)
-                                }
-
-                                lastCentroid = centroid
                             }
-
-                            if (scrollActive) viewModel.scroll(0f, 0f, finish = true)
-                            if (!movedBeyondTap && maxPointerCount == 1) {
-                                if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
-                                viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
-                            }
-                            if (!currentDragLocked) {
-                                viewModel.releasePointerButtons()
-                            }
+                        } catch (cancelled: CancellationException) {
+                            viewModel.notePointerCancellation("pointer_input_cancelled")
+                            gesture.cancel("pointer_input_cancelled").forEach(::handleGestureAction)
+                            throw cancelled
+                        } catch (throwable: Throwable) {
+                            viewModel.notePointerFailure(throwable)
+                            gesture.cancel("pointer_input_error").forEach(::handleGestureAction)
+                        } finally {
+                            gesture.cancel("pointer_input_finally").forEach(::handleGestureAction)
+                            viewModel.updateRemoteGesture(RemoteGestureMode.Idle, 0)
+                            if (sessionStarted) viewModel.endRemoteInteraction(sessionId)
+                            if (!currentDragLocked) viewModel.releasePointerButtons()
                         }
-                    } finally {
-                        viewModel.scroll(0f, 0f, finish = true)
-                        viewModel.releasePointerButtons()
                     }
                 }
         ) {
@@ -478,6 +557,14 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 Spacer(Modifier.height(10.dp))
                 Text("Touchpad", color = Mist, fontWeight = FontWeight.Bold)
                 Text("Tap, double tap, drag lock, two-finger scroll", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+            if (BuildConfig.DEBUG) {
+                RemoteInputDebugOverlay(
+                    state = state,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(14.dp),
+                )
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -506,6 +593,23 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
             }
         }
         Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun RemoteInputDebugOverlay(state: WaypadUiState, modifier: Modifier = Modifier) {
+    Surface(
+        color = Graphite.copy(alpha = 0.78f),
+        contentColor = Mist,
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Text(state.remoteGestureMode.label, color = Acid, style = MaterialTheme.typography.labelSmall)
+            Text("pointers ${state.remotePointerCount}", color = Muted, style = MaterialTheme.typography.labelSmall)
+            Text("queue ${state.remoteInputBacklog}", color = Muted, style = MaterialTheme.typography.labelSmall)
+            Text(state.connectionState.name, color = Muted, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
 

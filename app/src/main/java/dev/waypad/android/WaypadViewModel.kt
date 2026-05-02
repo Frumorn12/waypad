@@ -2,8 +2,10 @@ package dev.waypad.android
 
 import android.app.Application
 import android.os.Build
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.waypad.android.core.input.RemoteGestureMode
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.CapabilitySummary
 import dev.waypad.android.core.model.ConnectionState
@@ -13,10 +15,14 @@ import dev.waypad.android.core.model.TrustedHost
 import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
 import dev.waypad.android.core.storage.TrustedHostStore
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -46,19 +52,38 @@ data class WaypadUiState(
     val status: String = "Ready",
     val error: String? = null,
     val haptics: Boolean = true,
+    val remoteInputSessionActive: Boolean = false,
+    val remoteGestureMode: RemoteGestureMode = RemoteGestureMode.Idle,
+    val remotePointerCount: Int = 0,
+    val remoteInputBacklog: Int = 0,
 )
 
 class WaypadViewModel(application: Application) : AndroidViewModel(application) {
+    private companion object {
+        const val TAG = "WaypadViewModel"
+        const val INPUT_QUEUE_CAPACITY = 256
+        const val INTERACTION_GRACE_MS = 180L
+        const val INTERACTION_KEEPALIVE_INITIAL_MS = 2_000L
+        const val INTERACTION_KEEPALIVE_INTERVAL_MS = 5_000L
+    }
+
     private val discovery = WaypadDiscovery(application)
     private val client = WaypadClient()
     private val store = TrustedHostStore(application)
-    private var pendingPointerDx = 0f
-    private var pendingPointerDy = 0f
-    private var pointerPumpJob: Job? = null
+    private val inputCommands = Channel<RemoteInputCommand>(capacity = INPUT_QUEUE_CAPACITY)
+    private val queuedInputCommands = AtomicInteger(0)
+    private var interactionKeepAliveJob: Job? = null
+    private var interactionEndJob: Job? = null
+    private var activeInteractionSessionId = 0L
+    private var nextInteractionSessionId = 0L
     private val _state = MutableStateFlow(
         WaypadUiState(trustedHosts = store.load())
     )
     val state: StateFlow<WaypadUiState> = _state
+
+    init {
+        viewModelScope.launch { drainInputCommands() }
+    }
 
     fun go(screen: Screen) {
         _state.update { it.copy(screen = screen, error = null) }
@@ -129,6 +154,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(error = "Enter the 6 digit pairing code shown on the Linux host.") }
             return
         }
+        Log.i(TAG, "connection_state=pairing host=${host.hostName} address=${host.address}:${host.port}")
         _state.update { it.copy(connectionState = ConnectionState.Pairing, status = "Pairing with ${host.hostName}...", error = null) }
         viewModelScope.launch {
             val deviceName = "Waypad Android ${Build.MODEL}".take(80)
@@ -141,6 +167,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                     expectedFingerprint = host.fingerprint.ifBlank { null },
                 )
             }.onSuccess { (trusted, capabilities) ->
+                Log.i(TAG, "connection_state=connected paired_host=${trusted.hostName} input_backend=${capabilities.inputBackend}")
                 store.upsert(trusted)
                 _state.update {
                     it.copy(
@@ -158,10 +185,12 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun connect(host: TrustedHost) {
+        Log.i(TAG, "connection_state=connecting host=${host.hostName} address=${host.address}:${host.port}")
         _state.update { it.copy(connectionState = ConnectionState.Connecting, status = "Connecting to ${host.hostName}...", error = null) }
         viewModelScope.launch {
             runCatching { client.connect(host) }
                 .onSuccess { capabilities ->
+                    Log.i(TAG, "connection_state=connected host=${host.hostName} input_backend=${capabilities.inputBackend}")
                     val updated = host.copy(lastConnectedAt = System.currentTimeMillis())
                     store.upsert(updated)
                     _state.update {
@@ -180,10 +209,24 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun disconnect() {
-        client.close()
+        Log.i(TAG, "connection_state=disconnected user_requested=true")
+        interactionKeepAliveJob?.cancel()
+        interactionEndJob?.cancel()
+        activeInteractionSessionId = 0L
         _state.update {
-            it.copy(connectionState = ConnectionState.Disconnected, connectedHost = null, screen = Screen.Discovery, status = "Disconnected")
+            it.copy(
+                connectionState = ConnectionState.Disconnected,
+                connectedHost = null,
+                screen = Screen.Discovery,
+                status = "Disconnected",
+                remoteInputSessionActive = false,
+                remoteGestureMode = RemoteGestureMode.Idle,
+                remotePointerCount = 0,
+                remoteInputBacklog = 0,
+            )
         }
+        clearQueuedInput()
+        client.close()
     }
 
     fun removeTrustedHost(id: String) {
@@ -193,12 +236,61 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun prepareInput() = launchCommand("Requesting portal approval...") { client.prepareInput() }
 
+    fun beginRemoteInteraction(): Long {
+        val sessionId = ++nextInteractionSessionId
+        activeInteractionSessionId = sessionId
+        interactionEndJob?.cancel()
+        if (!_state.value.remoteInputSessionActive) {
+            Log.d(TAG, "remote_interaction_start session=$sessionId")
+        }
+        _state.update {
+            it.copy(
+                remoteInputSessionActive = true,
+                remoteGestureMode = RemoteGestureMode.SinglePointerDown,
+                remotePointerCount = maxOf(1, it.remotePointerCount),
+            )
+        }
+        startInteractionKeepAlive()
+        return sessionId
+    }
+
+    fun updateRemoteGesture(mode: RemoteGestureMode, pointerCount: Int) {
+        val current = _state.value
+        if (current.remoteGestureMode == mode && current.remotePointerCount == pointerCount) return
+        Log.d(TAG, "gesture_state mode=${mode.label} pointer_count=$pointerCount")
+        _state.update { it.copy(remoteGestureMode = mode, remotePointerCount = pointerCount) }
+    }
+
+    fun endRemoteInteraction(sessionId: Long) {
+        if (activeInteractionSessionId != sessionId) return
+        interactionEndJob?.cancel()
+        interactionEndJob = viewModelScope.launch {
+            delay(INTERACTION_GRACE_MS)
+            if (activeInteractionSessionId != sessionId) return@launch
+            Log.d(TAG, "remote_interaction_end session=$sessionId")
+            activeInteractionSessionId = 0L
+            interactionKeepAliveJob?.cancel()
+            _state.update {
+                it.copy(
+                    remoteInputSessionActive = false,
+                    remoteGestureMode = RemoteGestureMode.Idle,
+                    remotePointerCount = 0,
+                )
+            }
+        }
+    }
+
+    fun notePointerCancellation(reason: String) {
+        Log.w(TAG, "pointer_cancel reason=$reason")
+    }
+
+    fun notePointerFailure(throwable: Throwable) {
+        Log.e(TAG, "pointer_failure", throwable)
+    }
+
     fun pointerMove(dx: Float, dy: Float) {
         if (!dx.isFinite() || !dy.isFinite()) return
-        pendingPointerDx += dx
-        pendingPointerDy += dy
-        if (pointerPumpJob?.isActive == true) return
-        pointerPumpJob = viewModelScope.launch { drainPointerMoves() }
+        enqueueInput(RemoteInputCommand.PointerMove(dx, dy))
     }
 
     fun pointerButton(button: PointerButton, state: ButtonState) {
@@ -208,17 +300,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        launchCommand(null) { client.pointerButton(button, state) }
+        enqueueInput(RemoteInputCommand.PointerButton(button, state))
     }
 
     fun releasePointerButtons() {
-        pendingPointerDx = 0f
-        pendingPointerDy = 0f
-        launchQuiet {
-            client.pointerButton(PointerButton.Left, ButtonState.Released)
-            client.pointerButton(PointerButton.Right, ButtonState.Released)
-            client.pointerButton(PointerButton.Middle, ButtonState.Released)
-        }
+        enqueueInput(RemoteInputCommand.ReleasePointerButtons)
     }
 
     fun scroll(dx: Float, dy: Float, finish: Boolean = false) {
@@ -228,7 +314,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        launchQuiet { client.scroll(dx, dy, finish) }
+        if (finish) {
+            enqueueInput(RemoteInputCommand.ScrollFinish)
+        } else if (dx.isFinite() && dy.isFinite()) {
+            enqueueInput(RemoteInputCommand.Scroll(dx, dy))
+        }
     }
 
     fun sendText(text: String) = launchCommand("Sending text...") { client.text(text) }
@@ -292,6 +382,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             runCatching { block() }
                 .onFailure { throwable ->
                     if (throwable.isTransportFailure()) {
+                        Log.w(TAG, "transport_failure quiet_command reconnecting=true", throwable)
                         reconnectCurrentHost()
                     } else {
                         fail("Input failed", throwable)
@@ -300,25 +391,12 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private suspend fun drainPointerMoves() {
-        while (abs(pendingPointerDx) + abs(pendingPointerDy) > 0.01f) {
-            val dx = pendingPointerDx
-            val dy = pendingPointerDy
-            pendingPointerDx = 0f
-            pendingPointerDy = 0f
-            runCatching { client.pointerMove(dx, dy) }
-                .onFailure { throwable ->
-                    if (!throwable.isTransportFailure() || !reconnectCurrentHost()) {
-                        fail("Input failed", throwable)
-                    }
-                }
-        }
-    }
-
     private suspend fun reconnectCurrentHost(): Boolean {
         val host = _state.value.connectedHost ?: return false
+        Log.i(TAG, "connection_state=reconnecting host=${host.hostName}")
         return runCatching {
             val capabilities = client.connect(host)
+            Log.i(TAG, "connection_state=reconnected host=${host.hostName} input_backend=${capabilities.inputBackend}")
             _state.update {
                 it.copy(
                     capabilities = capabilities,
@@ -331,6 +409,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun fail(prefix: String, throwable: Throwable) {
+        Log.e(TAG, "connection_state=error prefix=$prefix", throwable)
         _state.update {
             it.copy(
                 connectionState = ConnectionState.Error,
@@ -339,6 +418,186 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
     }
+
+    private fun enqueueInput(command: RemoteInputCommand) {
+        val current = _state.value
+        if (current.connectedHost == null || current.connectionState == ConnectionState.Disconnected) {
+            Log.d(TAG, "input_queue_drop_disconnected command=$command")
+            return
+        }
+        val result = inputCommands.trySend(command)
+        if (result.isSuccess) {
+            val depth = queuedInputCommands.incrementAndGet()
+            updateInputBacklog(depth)
+        } else if (command.isTerminal) {
+            Log.w(TAG, "input_queue_backpressure command=$command preserving_terminal=true")
+            viewModelScope.launch {
+                runCatching { inputCommands.send(command) }
+                    .onSuccess {
+                        val depth = queuedInputCommands.incrementAndGet()
+                        updateInputBacklog(depth)
+                    }
+                    .onFailure {
+                        Log.w(TAG, "input_queue_rejected command=$command cause=${it.message}")
+                    }
+            }
+        } else {
+            Log.w(TAG, "input_queue_drop_backpressure command=$command cause=${result.exceptionOrNull()?.message}")
+        }
+    }
+
+    private fun clearQueuedInput() {
+        while (inputCommands.tryReceive().isSuccess) {
+            // Drain stale gesture commands after explicit disconnect so they cannot reconnect or
+            // mutate UI state after the user has left the remote session.
+        }
+        queuedInputCommands.set(0)
+        updateInputBacklog(0)
+    }
+
+    private fun startInteractionKeepAlive() {
+        if (interactionKeepAliveJob?.isActive == true) return
+        interactionKeepAliveJob = viewModelScope.launch {
+            delay(INTERACTION_KEEPALIVE_INITIAL_MS)
+            while (isActive && _state.value.remoteInputSessionActive) {
+                enqueueInput(RemoteInputCommand.Ping)
+                delay(INTERACTION_KEEPALIVE_INTERVAL_MS)
+            }
+        }
+    }
+
+    private suspend fun drainInputCommands() {
+        val pending = ArrayDeque<RemoteInputCommand>()
+        while (true) {
+            val command = if (pending.isNotEmpty()) {
+                pending.removeFirst()
+            } else {
+                inputCommands.receiveCatching().getOrNull()?.also { markInputDequeued() } ?: break
+            }
+            if (_state.value.connectedHost == null || _state.value.connectionState == ConnectionState.Disconnected) {
+                Log.d(TAG, "input_queue_skip_disconnected command=$command")
+                continue
+            }
+            handleInputCommand(command, pending)
+        }
+    }
+
+    private suspend fun handleInputCommand(
+        command: RemoteInputCommand,
+        pending: ArrayDeque<RemoteInputCommand>,
+    ) {
+        when (command) {
+            is RemoteInputCommand.PointerMove -> {
+                var dx = command.dx
+                var dy = command.dy
+                while (true) {
+                    val next = pollInputCommand() ?: break
+                    if (next is RemoteInputCommand.PointerMove) {
+                        dx += next.dx
+                        dy += next.dy
+                    } else {
+                        pending.addFirst(next)
+                        break
+                    }
+                }
+                if (abs(dx) + abs(dy) > 0.01f) {
+                    Log.v(TAG, "transport_send type=pointer_move dx=$dx dy=$dy")
+                    sendInput("pointer_move") { client.pointerMove(dx, dy) }
+                }
+            }
+            is RemoteInputCommand.Scroll -> {
+                var dx = command.dx
+                var dy = command.dy
+                while (true) {
+                    val next = pollInputCommand() ?: break
+                    if (next is RemoteInputCommand.Scroll) {
+                        dx += next.dx
+                        dy += next.dy
+                    } else {
+                        pending.addFirst(next)
+                        break
+                    }
+                }
+                if (abs(dx) + abs(dy) > 0.01f) {
+                    Log.v(TAG, "transport_send type=scroll dx=$dx dy=$dy")
+                    sendInput("scroll") { client.scroll(dx, dy, finish = false) }
+                }
+            }
+            RemoteInputCommand.ScrollFinish -> {
+                Log.d(TAG, "transport_send type=scroll_finish")
+                sendInput("scroll_finish") { client.scroll(0f, 0f, finish = true) }
+            }
+            is RemoteInputCommand.PointerButton -> {
+                Log.d(TAG, "transport_send type=pointer_button button=${command.button.wireName} state=${command.state.wireName}")
+                sendInput("pointer_button") { client.pointerButton(command.button, command.state) }
+            }
+            RemoteInputCommand.ReleasePointerButtons -> {
+                Log.d(TAG, "transport_send type=release_pointer_buttons")
+                sendInput("release_pointer_buttons") {
+                    client.pointerButton(PointerButton.Left, ButtonState.Released)
+                    client.pointerButton(PointerButton.Right, ButtonState.Released)
+                    client.pointerButton(PointerButton.Middle, ButtonState.Released)
+                }
+            }
+            RemoteInputCommand.Ping -> {
+                Log.v(TAG, "transport_send type=ping")
+                sendInput("ping") { client.ping() }
+            }
+        }
+    }
+
+    private fun pollInputCommand(): RemoteInputCommand? {
+        val command = inputCommands.tryReceive().getOrNull() ?: return null
+        markInputDequeued()
+        return command
+    }
+
+    private fun markInputDequeued() {
+        val depth = queuedInputCommands.updateAndGet { (it - 1).coerceAtLeast(0) }
+        updateInputBacklog(depth)
+    }
+
+    private fun updateInputBacklog(depth: Int) {
+        val current = _state.value.remoteInputBacklog
+        if (depth == 0 || abs(depth - current) >= 8) {
+            _state.update { it.copy(remoteInputBacklog = depth) }
+        }
+    }
+
+    private suspend fun sendInput(label: String, block: suspend () -> Unit) {
+        runCatching { block() }
+            .onFailure { throwable ->
+                Log.w(TAG, "transport_send_failed type=$label", throwable)
+                if (throwable.isTransportFailure() && reconnectCurrentHost()) {
+                    runCatching { block() }
+                        .onFailure { fail("Input failed", it) }
+                } else {
+                    fail("Input failed", throwable)
+                }
+            }
+    }
+
+    override fun onCleared() {
+        inputCommands.close()
+        interactionKeepAliveJob?.cancel()
+        interactionEndJob?.cancel()
+        client.close()
+        super.onCleared()
+    }
+}
+
+private sealed interface RemoteInputCommand {
+    val isTerminal: Boolean
+        get() = this !is RemoteInputCommand.PointerMove &&
+            this !is RemoteInputCommand.Scroll &&
+            this !is RemoteInputCommand.Ping
+
+    data class PointerMove(val dx: Float, val dy: Float) : RemoteInputCommand
+    data class Scroll(val dx: Float, val dy: Float) : RemoteInputCommand
+    data class PointerButton(val button: dev.waypad.android.core.model.PointerButton, val state: ButtonState) : RemoteInputCommand
+    data object ScrollFinish : RemoteInputCommand
+    data object ReleasePointerButtons : RemoteInputCommand
+    data object Ping : RemoteInputCommand
 }
 
 private fun Throwable.isTransportFailure(): Boolean {
