@@ -18,7 +18,7 @@ This is an MVP Android client. It is buildable as a debug APK and implements the
 - Remote screen mode with source selection, live JPEG frame display, aspect-ratio-aware touch mapping, tap/click, hold-drag, scroll, right click, quick text input, fullscreen, and Game Mode.
 - Stream profiles for Balanced, Quality, Ultra Low Latency, and Game Mode; these send real FPS, JPEG quality, and maximum-dimension requests to the daemon.
 - External Android mouse, keyboard, and controller forwarding while connected to Pad or Screen mode, subject to host capabilities.
-- QR invite deep links from `waypad-daemon invite --qr` for pairing and direct-public bootstrap.
+- Real in-app QR invite scanning with CameraX/ML Kit, plus paste/deep-link support for `waypad-daemon invite --qr`.
 - Live keyboard text input and shortcut buttons.
 - Media, volume, brightness, lock, and suspend controls gated by daemon capabilities.
 - Diagnostics screen for Wayland portal limitations.
@@ -113,9 +113,10 @@ QR pairing alternative:
 waypad-daemon invite --qr
 ```
 
-Scan the terminal QR or paste the printed `waypad://invite?...` payload into the
-Discovery screen. The app uses the embedded address, port, fingerprint, and
-one-time pairing code, then still verifies and pins the daemon's signed host key.
+Tap "Scan QR invite" on the Discovery screen, grant camera permission, and scan
+the terminal QR. Pasting the printed `waypad://invite?...` payload still works.
+The app uses the embedded endpoints, port, fingerprint, and one-time pairing
+code, then still verifies and pins the daemon's signed host key.
 
 For direct mobile-data testing, the daemon can advertise a public endpoint:
 
@@ -126,6 +127,11 @@ waypad-daemon invite --qr --remote-address your-public-hostname.example
 That requires TCP `47771` to be reachable from the phone and the daemon config to
 allow non-LAN source addresses. Waypad does not bundle a relay, STUN, TURN, or
 automatic ICE traversal yet.
+
+When a QR contains both a public endpoint and a LAN endpoint, Android tries the
+public/direct endpoint first and falls back to the LAN endpoint if that attempt
+fails. That makes the same QR useful when the phone is on mobile data or on the
+same Wi-Fi, as long as at least one advertised endpoint is reachable.
 
 ## Wayland and Hyprland Notes
 
@@ -203,6 +209,16 @@ waypad-daemon invite --qr --address <linux-lan-ip>
 The payload must not contain `127.0.0.1` unless Android is running on the same
 machine. For mobile data, use `--remote-address` and ensure the host firewall or
 router exposes TCP `47771`.
+
+QR scanner does not open the camera:
+
+```bash
+adb logcat -d -v time | grep -E 'WaypadQrScanner|camera_permission|camera_start'
+```
+
+The expected flow is `scanner_open`, `camera_permission_result granted=true`,
+and `camera_start_success`. If permission was denied, Android Settings must be
+used to re-enable camera access for Waypad.
 
 ## Development
 

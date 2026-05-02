@@ -17,7 +17,7 @@ import org.json.JSONObject
 
 class WaypadClient {
     private companion object {
-        const val MAX_ONE_WAY_POINTER_RESPONSES = 4
+        const val MAX_ONE_WAY_POINTER_RESPONSES = 32
     }
 
     private val transportMutex = Mutex()

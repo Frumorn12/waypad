@@ -16,6 +16,7 @@ class WaypadInviteTest {
         assertEquals("123456", invite.pairingCode)
         assertEquals("abcd", invite.fingerprint)
         assertEquals(42L, invite.expiresAt)
+        assertEquals(listOf("direct-public"), invite.endpoints.map { it.route })
     }
 
     @Test
@@ -25,5 +26,15 @@ class WaypadInviteTest {
         )
 
         assertEquals("203.0.113.44", invite.address)
+    }
+
+    @Test
+    fun keepsRemoteAndLanCandidatesForFallback() {
+        val invite = WaypadInvite.parse(
+            "waypad://invite?lan_address=192.168.1.20&remote_address=pc.example.test&port=47771&code=654321",
+        )
+
+        assertEquals(listOf("pc.example.test", "192.168.1.20"), invite.endpoints.map { it.address })
+        assertEquals(listOf("direct-public", "direct-lan"), invite.endpoints.map { it.route })
     }
 }

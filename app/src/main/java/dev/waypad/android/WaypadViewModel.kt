@@ -93,7 +93,8 @@ data class WaypadUiState(
 class WaypadViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val TAG = "WaypadViewModel"
-        const val INPUT_QUEUE_CAPACITY = 256
+        const val INPUT_QUEUE_CAPACITY = 96
+        const val REALTIME_INPUT_BACKLOG_HIGH_WATERMARK = 32
         const val INTERACTION_GRACE_MS = 180L
         const val INTERACTION_KEEPALIVE_INITIAL_MS = 2_000L
         const val INTERACTION_KEEPALIVE_INTERVAL_MS = 5_000L
@@ -119,6 +120,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private var streamFrameWindowCount = 0
     private var streamFrameWindowBytes = 0L
     private var handledInvitePayload: String? = null
+    private var pendingInvite: WaypadInvite? = null
     private var lastControllerCaptureNoticeAt = 0L
     private val _state = MutableStateFlow(
         WaypadUiState(trustedHosts = store.load())
@@ -167,9 +169,10 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         runCatching { WaypadInvite.parse(raw) }
             .onSuccess { invite ->
                 handledInvitePayload = raw
+                pendingInvite = invite
                 Log.i(
                     TAG,
-                    "qr_invite_loaded host=${invite.hostName} address=${invite.address}:${invite.port} route=${invite.route} expires=${invite.expiresAt}",
+                    "qr_invite_loaded host=${invite.hostName} endpoints=${invite.endpoints.joinToString { "${it.route}:${it.address}:${it.port}" }} route=${invite.route} expires=${invite.expiresAt}",
                 )
                 _state.update {
                     it.copy(
@@ -437,20 +440,22 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(error = "Enter the 6 digit pairing code shown on the Linux host.") }
             return
         }
-        Log.i(TAG, "connection_state=pairing host=${host.hostName} address=${host.address}:${host.port}")
+        val invite = pendingInvite?.takeIf { it.pairingCode == current.pairingCode }
+        val candidates = invite?.toCandidateHosts() ?: listOf(host)
+        Log.i(
+            TAG,
+            "connection_state=pairing host=${host.hostName} candidates=${candidates.joinToString { "${it.address}:${it.port}" }}",
+        )
         _state.update { it.copy(connectionState = ConnectionState.Pairing, status = "Pairing with ${host.hostName}...", error = null) }
         viewModelScope.launch {
             val deviceName = "Waypad Android ${Build.MODEL}".take(80)
-            runCatching {
-                client.pair(
-                    address = host.address,
-                    port = host.port,
-                    deviceName = deviceName,
-                    pairingCode = current.pairingCode,
-                    expectedFingerprint = host.fingerprint.ifBlank { null },
-                )
-            }.onSuccess { (trusted, capabilities) ->
+            pairWithCandidates(
+                candidates = candidates,
+                deviceName = deviceName,
+                pairingCode = current.pairingCode,
+            ).onSuccess { (trusted, capabilities) ->
                 Log.i(TAG, "connection_state=connected paired_host=${trusted.hostName} input_backend=${capabilities.inputBackend}")
+                pendingInvite = null
                 store.upsert(trusted)
                 _state.update {
                     it.copy(
@@ -466,6 +471,40 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 publishCurrentExternalDevices()
             }.onFailure { fail("Pairing failed", it) }
         }
+    }
+
+    private suspend fun pairWithCandidates(
+        candidates: List<DiscoveredHost>,
+        deviceName: String,
+        pairingCode: String,
+    ): Result<Pair<TrustedHost, CapabilitySummary>> {
+        var lastFailure: Throwable? = null
+        for ((index, candidate) in candidates.distinctBy { "${it.address}:${it.port}" }.withIndex()) {
+            Log.i(
+                TAG,
+                "qr_invite_connect_attempt index=$index address=${candidate.address}:${candidate.port} backend=${candidate.inputBackend}",
+            )
+            val result = runCatching {
+                client.pair(
+                    address = candidate.address,
+                    port = candidate.port,
+                    deviceName = deviceName,
+                    pairingCode = pairingCode,
+                    expectedFingerprint = candidate.fingerprint.ifBlank { null },
+                )
+            }
+            if (result.isSuccess) return result
+            lastFailure = result.exceptionOrNull()
+            Log.w(
+                TAG,
+                "qr_invite_connect_failed index=$index address=${candidate.address}:${candidate.port} message=${lastFailure?.message}",
+                lastFailure,
+            )
+            _state.update {
+                it.copy(status = "Invite endpoint ${candidate.address}:${candidate.port} failed; trying fallback...")
+            }
+        }
+        return Result.failure(lastFailure ?: IllegalStateException("No usable invite endpoints"))
     }
 
     fun connect(host: TrustedHost) {
@@ -987,6 +1026,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             Log.d(TAG, "input_queue_drop_disconnected command=$command")
             return
         }
+        val queued = queuedInputCommands.get()
+        if (command.isRealtime && queued >= REALTIME_INPUT_BACKLOG_HIGH_WATERMARK) {
+            Log.w(TAG, "input_queue_drop_stale_realtime depth=$queued command=$command")
+            return
+        }
         val result = inputCommands.trySend(command)
         if (result.isSuccess) {
             val depth = queuedInputCommands.incrementAndGet()
@@ -1166,22 +1210,29 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         sendInput("external_pointer_scroll") { client.externalInput(coalesced) }
                     }
                     is ExternalInputEvent.ControllerAxis -> {
-                        var latest = external
+                        val latestByAxis = linkedMapOf(external.axis to external)
                         while (true) {
                             val next = pollInputCommand() ?: break
                             val nextEvent = (next as? RemoteInputCommand.External)?.event
                             if (nextEvent is ExternalInputEvent.ControllerAxis &&
-                                nextEvent.deviceId == external.deviceId &&
-                                nextEvent.axis == external.axis
+                                nextEvent.deviceId == external.deviceId
                             ) {
-                                latest = nextEvent
+                                latestByAxis[nextEvent.axis] = nextEvent
                             } else {
                                 pending.addFirst(next)
                                 break
                             }
                         }
-                        Log.v(TAG, "transport_send type=external_controller_axis device=${latest.deviceId} axis=${latest.axis} value=${latest.value}")
-                        sendInput("external_controller_axis") { client.externalInput(latest) }
+                        if (latestByAxis.size > 1) {
+                            Log.d(
+                                TAG,
+                                "input_queue_coalesce_controller_axes device=${external.deviceId} axes=${latestByAxis.keys} count=${latestByAxis.size}",
+                            )
+                        }
+                        latestByAxis.values.forEach { latest ->
+                            Log.v(TAG, "transport_send type=external_controller_axis device=${latest.deviceId} axis=${latest.axis} value=${latest.value}")
+                            sendInput("external_controller_axis") { client.externalInput(latest) }
+                        }
                     }
                     else -> {
                         Log.d(TAG, "transport_send type=external_input event=${external::class.simpleName} device=${external.deviceId}")
@@ -1324,12 +1375,15 @@ private fun Double.formatFps(): String = if (this >= 10.0) {
 }
 
 private sealed interface RemoteInputCommand {
+    val isRealtime: Boolean
+        get() = this is RemoteInputCommand.PointerMove ||
+            this is RemoteInputCommand.PointerMoveAbsolute ||
+            this is RemoteInputCommand.Scroll ||
+            this is RemoteInputCommand.Ping ||
+            (this is RemoteInputCommand.External && this.event.highFrequency)
+
     val isTerminal: Boolean
-        get() = this !is RemoteInputCommand.PointerMove &&
-            this !is RemoteInputCommand.PointerMoveAbsolute &&
-            this !is RemoteInputCommand.Scroll &&
-            (this !is RemoteInputCommand.External || !this.event.highFrequency) &&
-            this !is RemoteInputCommand.Ping
+        get() = !isRealtime
 
     data class PointerMove(val dx: Float, val dy: Float) : RemoteInputCommand
     data class PointerMoveAbsolute(val sourceId: String?, val x: Float, val y: Float) : RemoteInputCommand

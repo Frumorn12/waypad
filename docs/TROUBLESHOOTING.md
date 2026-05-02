@@ -148,6 +148,29 @@ There is no bundled relay, STUN, TURN, or automatic ICE traversal yet. On the
 host, `require_private_lan` must be false for public source addresses, and the
 firewall/router must allow TCP `47771`.
 
+When an invite contains both `remote_address` and `lan_address`, Android logs
+each endpoint attempt:
+
+```bash
+adb logcat -d -v time | grep -E 'qr_invite_connect_attempt|qr_invite_connect_failed'
+```
+
+This is the expected fallback behavior. If every candidate fails, the advertised
+public hostname/IP is not reachable from the current phone network or the daemon
+is still rejecting public source addresses.
+
+## QR Scanner Does Not Open The Camera
+
+The Discovery screen uses CameraX and ML Kit, not a placeholder. Collect logs:
+
+```bash
+adb logcat -d -v time | grep -E 'WaypadQrScanner|camera_permission|camera_start|qr_decode'
+```
+
+Healthy logs include `scanner_open`, `camera_permission_result granted=true`,
+`camera_start_success`, and `qr_decode_success`. If permission is denied, open
+Android Settings for Waypad and grant Camera.
+
 ## Stream Works But Taps Do Not Control The PC
 
 Capture and input are separate host capabilities. The app can show the screen while input is blocked. Check Diagnostics:
@@ -181,8 +204,17 @@ Android gamepad/controller detection is implemented, including buttons, sticks, 
 If the controller appears to click Android UI or blink/retrigger, open Remote
 Screen fullscreen or Game Mode before testing. The app forwards controller input
 only while remote capture is active, filters repeat `ACTION_DOWN` events, applies
-axis deadzones, coalesces axis updates, and reserves only Mode or Start+Select
-for local control reveal.
+axis deadzones, coalesces axis updates, drops stale realtime input when backlog
+is high, and reserves only Mode or Start+Select for local control reveal.
+
+For burst or lag diagnosis:
+
+```bash
+adb logcat -d -v time | grep -E 'input_queue_|external_controller_axis|controller_input_held'
+```
+
+Repeated `input_queue_drop_stale_realtime` means the app is protecting host
+latency by dropping old analog states instead of replaying them late.
 
 ## APK Build Fails
 

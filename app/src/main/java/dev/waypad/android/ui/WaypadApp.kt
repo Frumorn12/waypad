@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Mouse
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
@@ -410,69 +411,91 @@ private fun OnboardingScreen(viewModel: WaypadViewModel) {
 @Composable
 private fun DiscoveryScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
     var inviteText by remember { mutableStateOf("") }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item {
-            SectionTitle("Host Discovery", "UDP LAN discovery with manual IP fallback.")
-            Button(onClick = { viewModel.startDiscovery() }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.Refresh, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Scan again")
+    var scannerOpen by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            item {
+                SectionTitle("Host Discovery", "UDP LAN discovery with manual IP and QR invite fallback.")
+                Button(onClick = { viewModel.startDiscovery() }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scan LAN")
+                }
             }
-        }
-        items(state.discoveredHosts) { host ->
-            HostCard(host) { viewModel.selectHost(host) }
-        }
-        item {
-            GlassCard {
-                Text("Manual connect", color = Mist, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = state.manualAddress,
-                    onValueChange = viewModel::setManualAddress,
-                    label = { Text("Host IP address") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = state.manualPort,
-                    onValueChange = viewModel::setManualPort,
-                    label = { Text("Port") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = { viewModel.useManualHost() }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Continue")
+            items(state.discoveredHosts) { host ->
+                HostCard(host) { viewModel.selectHost(host) }
+            }
+            item {
+                GlassCard {
+                    Text("QR invite", color = Mist, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Scan a terminal QR in-app. Invites can carry LAN and remote-direct endpoints.",
+                        color = Muted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { scannerOpen = true },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.QrCodeScanner, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Scan QR invite")
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = inviteText,
+                        onValueChange = { inviteText = it.trim() },
+                        label = { Text("waypad://invite...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.applyInvite(inviteText) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = inviteText.startsWith("waypad://invite"),
+                    ) {
+                        Text("Use pasted invite")
+                    }
+                }
+            }
+            item {
+                GlassCard {
+                    Text("Manual connect", color = Mist, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = state.manualAddress,
+                        onValueChange = viewModel::setManualAddress,
+                        label = { Text("Host IP address") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = state.manualPort,
+                        onValueChange = viewModel::setManualPort,
+                        label = { Text("Port") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = { viewModel.useManualHost() }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Continue")
+                    }
                 }
             }
         }
-        item {
-            GlassCard {
-                Text("QR invite", color = Mist, fontWeight = FontWeight.Bold)
-                Text(
-                    "Scan a terminal QR with the system camera, or paste the waypad://invite payload here.",
-                    color = Muted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = inviteText,
-                    onValueChange = { inviteText = it.trim() },
-                    label = { Text("waypad://invite...") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { viewModel.applyInvite(inviteText) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = inviteText.startsWith("waypad://invite"),
-                ) {
-                    Text("Use invite")
-                }
-            }
+        if (scannerOpen) {
+            WaypadQrScannerOverlay(
+                onInviteScanned = { raw ->
+                    scannerOpen = false
+                    inviteText = raw
+                    viewModel.applyInvite(raw)
+                },
+                onDismiss = { scannerOpen = false },
+            )
         }
     }
 }

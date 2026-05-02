@@ -12,6 +12,7 @@ data class WaypadInvite(
     val pairingCode: String,
     val expiresAt: Long,
     val route: String,
+    val endpoints: List<WaypadInviteEndpoint> = listOf(WaypadInviteEndpoint(address, port, route)),
 ) {
     fun toDiscoveredHost(): DiscoveredHost = DiscoveredHost(
         hostName = hostName.ifBlank { address },
@@ -24,6 +25,21 @@ data class WaypadInvite(
         captureBackend = "invite",
     )
 
+    fun toCandidateHosts(): List<DiscoveredHost> =
+        endpoints.ifEmpty { listOf(WaypadInviteEndpoint(address, port, route)) }
+            .map { endpoint ->
+                DiscoveredHost(
+                    hostName = hostName.ifBlank { endpoint.address },
+                    address = endpoint.address,
+                    port = endpoint.port,
+                    fingerprint = fingerprint,
+                    inputSupported = false,
+                    inputBackend = "invite/${endpoint.route}",
+                    captureSupported = false,
+                    captureBackend = "invite/${endpoint.route}",
+                )
+            }
+
     companion object {
         fun parse(raw: String): WaypadInvite {
             val uri = URI(raw.trim())
@@ -31,21 +47,31 @@ data class WaypadInvite(
                 "Unsupported Waypad invite format"
             }
             val query = parseQuery(uri.rawQuery.orEmpty())
-            val address = query["remote_address"]
-                ?.takeIf(String::isNotBlank)
-                ?: query["address"]
-                ?: query["lan_address"]
-                ?: throw IllegalArgumentException("Invite is missing host address")
+            val port = query["port"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 47771
+            val endpoints = buildList {
+                query["remote_address"]?.takeIf(String::isNotBlank)?.let {
+                    add(WaypadInviteEndpoint(it, port, "direct-public"))
+                }
+                query["address"]?.takeIf(String::isNotBlank)?.let {
+                    val route = if (isPrivateLanAddress(it)) "direct-lan" else "direct-public"
+                    add(WaypadInviteEndpoint(it, port, route))
+                }
+                query["lan_address"]?.takeIf(String::isNotBlank)?.let {
+                    add(WaypadInviteEndpoint(it, port, "direct-lan"))
+                }
+            }.distinctBy { "${it.address}:${it.port}" }
+            val primary = endpoints.firstOrNull() ?: throw IllegalArgumentException("Invite is missing host address")
             val code = query["code"].orEmpty().filter(Char::isDigit).take(6)
             require(code.length == 6) { "Invite is missing a 6 digit pairing code" }
             return WaypadInvite(
                 hostName = query["host"].orEmpty(),
-                address = address,
-                port = query["port"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 47771,
+                address = primary.address,
+                port = primary.port,
                 fingerprint = query["fingerprint"].orEmpty(),
                 pairingCode = code,
                 expiresAt = query["expires"]?.toLongOrNull() ?: 0L,
-                route = query["route"].orEmpty().ifBlank { "direct" },
+                route = query["route"].orEmpty().ifBlank { primary.route },
+                endpoints = endpoints,
             )
         }
 
@@ -64,3 +90,16 @@ data class WaypadInvite(
             URLDecoder.decode(value, Charsets.UTF_8.name())
     }
 }
+
+data class WaypadInviteEndpoint(
+    val address: String,
+    val port: Int,
+    val route: String,
+)
+
+private fun isPrivateLanAddress(address: String): Boolean =
+    address.startsWith("10.") ||
+        address.startsWith("192.168.") ||
+        Regex("""^172\.(1[6-9]|2\d|3[0-1])\.""").containsMatchIn(address) ||
+        address == "localhost" ||
+        address.startsWith("127.")
