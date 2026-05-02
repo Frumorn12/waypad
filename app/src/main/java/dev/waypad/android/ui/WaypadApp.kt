@@ -1,6 +1,13 @@
 package dev.waypad.android.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.os.Build
 import android.util.Log
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
@@ -26,12 +33,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Mouse
 import androidx.compose.material.icons.rounded.Refresh
@@ -66,6 +77,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.changedToDown
@@ -73,14 +85,17 @@ import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -98,31 +113,40 @@ import dev.waypad.android.core.model.ConnectionState
 import dev.waypad.android.core.model.DiscoveredHost
 import dev.waypad.android.core.model.PointerButton
 import dev.waypad.android.core.model.TrustedHost
+import dev.waypad.android.core.screen.ScreenViewport
 import kotlinx.coroutines.CancellationException
+import kotlin.math.hypot
 
 @Composable
 fun WaypadApp(viewModel: WaypadViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val remoteFullscreen = state.screen == Screen.RemoteDisplay && state.remoteScreenFullscreen
+    FullscreenSystemUiEffect(remoteFullscreen)
+    BackHandler(remoteFullscreen) {
+        viewModel.setRemoteScreenFullscreen(false)
+    }
     WaypadTheme {
         Box(
             Modifier
                 .fillMaxSize()
                 .background(Brush.verticalGradient(listOf(Ink, Color(0xFF0D130D), Ink)))
         ) {
-            AtmosphericBackground()
+            if (!remoteFullscreen) AtmosphericBackground()
             Scaffold(
                 containerColor = Color.Transparent,
-                topBar = { TopStatus(state, viewModel) },
+                topBar = {
+                    if (!remoteFullscreen) TopStatus(state, viewModel)
+                },
                 bottomBar = {
-                    if (state.connectionState == ConnectionState.Connected) {
+                    if (state.connectionState == ConnectionState.Connected && !remoteFullscreen) {
                         BottomRail(state.screen, viewModel)
                     }
                 },
             ) { padding ->
                 Box(
                     Modifier
-                        .padding(padding)
-                        .padding(horizontal = 18.dp)
+                        .padding(if (remoteFullscreen) androidx.compose.foundation.layout.PaddingValues(0.dp) else padding)
+                        .padding(horizontal = if (remoteFullscreen) 0.dp else 18.dp)
                         .fillMaxSize()
                 ) {
                     when (state.screen) {
@@ -130,6 +154,7 @@ fun WaypadApp(viewModel: WaypadViewModel) {
                         Screen.Discovery -> DiscoveryScreen(state, viewModel)
                         Screen.Pairing -> PairingScreen(state, viewModel)
                         Screen.Remote -> RemoteScreen(state, viewModel)
+                        Screen.RemoteDisplay -> RemoteDisplayScreen(state, viewModel)
                         Screen.Keyboard -> KeyboardScreen(viewModel)
                         Screen.Controls -> ControlsScreen(state, viewModel)
                         Screen.Settings -> SettingsScreen(state, viewModel)
@@ -140,6 +165,53 @@ fun WaypadApp(viewModel: WaypadViewModel) {
             }
         }
     }
+}
+
+@Composable
+private fun FullscreenSystemUiEffect(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(enabled, view) {
+        val window = view.context.findActivity()?.window
+        if (enabled) {
+            Log.i("WaypadRemoteScreen", "fullscreen_system_ui_hide")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window?.insetsController?.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                window?.insetsController?.hide(WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                window?.decorView?.systemUiVisibility =
+                    android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                        android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                        android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                        android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                        android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                        android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            }
+        } else {
+            Log.i("WaypadRemoteScreen", "fullscreen_system_ui_show")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window?.insetsController?.show(WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                window?.decorView?.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            }
+        }
+        onDispose {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window?.insetsController?.show(WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                window?.decorView?.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            }
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 @Composable
@@ -236,6 +308,7 @@ private fun BottomRail(active: Screen, viewModel: WaypadViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             RailItem("Pad", Icons.Rounded.Mouse, active == Screen.Remote) { viewModel.go(Screen.Remote) }
+            RailItem("Screen", Icons.Rounded.Computer, active == Screen.RemoteDisplay) { viewModel.go(Screen.RemoteDisplay) }
             RailItem("Keys", Icons.Rounded.Keyboard, active == Screen.Keyboard) { viewModel.go(Screen.Keyboard) }
             RailItem("Control", Icons.Rounded.Tune, active == Screen.Controls) { viewModel.go(Screen.Controls) }
             RailItem("Diag", Icons.Rounded.Shield, active == Screen.Troubleshooting) { viewModel.go(Screen.Troubleshooting) }
@@ -340,7 +413,14 @@ private fun HostCard(host: DiscoveredHost, onClick: () -> Unit) {
                 Text("${host.address}:${host.port}", color = Muted, style = MaterialTheme.typography.bodySmall)
                 Text(shortFingerprint(host.fingerprint), color = Muted, style = MaterialTheme.typography.labelSmall)
             }
-            StatusPill(if (host.inputSupported) host.inputBackend else "Input blocked")
+            StatusPill(
+                when {
+                    host.inputSupported && host.captureSupported -> "Control + screen"
+                    host.inputSupported -> host.inputBackend
+                    host.captureSupported -> host.captureBackend
+                    else -> "Limited"
+                }
+            )
         }
     }
 }
@@ -614,6 +694,332 @@ private fun RemoteInputDebugOverlay(state: WaypadUiState, modifier: Modifier = M
 }
 
 @Composable
+private fun RemoteDisplayScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
+    val frame = state.screenFrame
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
+    var keyboardText by remember { mutableStateOf("") }
+    var quickKeyboardVisible by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+    val tapSlop = with(LocalDensity.current) { 8.dp.toPx() }
+    val fullscreen = state.remoteScreenFullscreen
+    val activeSource = state.screenStreamInfo?.source
+        ?: state.screenSources.firstOrNull { it.id == state.selectedScreenSourceId }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.setRemoteScreenFullscreen(false)
+            viewModel.stopScreenStream()
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(if (fullscreen) Color.Black else Color.Transparent)
+    ) {
+        if (!fullscreen) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusPill(if (state.capabilities.captureSupported) "Capture: ${state.capabilities.captureBackend}" else "Capture blocked")
+                StatusPill(if (state.capabilities.inputSupported) "Input: ${state.capabilities.inputBackend}" else "Input blocked")
+            }
+            Spacer(Modifier.height(10.dp))
+            if (state.screenSources.isNotEmpty()) {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    items(state.screenSources) { source ->
+                        val selected = source.id == state.selectedScreenSourceId
+                        val label = source.label.ifBlank { source.id }
+                        if (selected) {
+                            Button(onClick = { viewModel.selectScreenSource(source.id) }) {
+                                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        } else {
+                            OutlinedButton(onClick = { viewModel.selectScreenSource(source.id) }) {
+                                Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { viewModel.startScreenStream() },
+                    modifier = Modifier.weight(1f),
+                    enabled = !state.screenStreaming,
+                ) {
+                    Text("Start")
+                }
+                OutlinedButton(onClick = { viewModel.stopScreenStream() }, modifier = Modifier.weight(1f)) {
+                    Text("Stop")
+                }
+                OutlinedButton(onClick = { viewModel.loadScreenSources() }, modifier = Modifier.weight(1f)) {
+                    Text("Sources")
+                }
+                OutlinedButton(onClick = { viewModel.setRemoteScreenFullscreen(true) }, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Rounded.Fullscreen, contentDescription = "Fullscreen")
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(if (fullscreen) 0.dp else 18.dp))
+                .background(Color.Black)
+                .border(
+                    if (fullscreen) 0.dp else 1.dp,
+                    if (state.screenStreaming) Acid.copy(alpha = 0.65f) else Line,
+                    RoundedCornerShape(if (fullscreen) 0.dp else 18.dp),
+                )
+                .onSizeChanged { viewSize = it }
+                .pointerInput(frame?.width, frame?.height, viewSize, activeSource?.id) {
+                    val currentFrame = frame ?: return@pointerInput
+                    if (viewSize.width <= 0 || viewSize.height <= 0) return@pointerInput
+                    val viewport = ScreenViewport(
+                        viewWidth = viewSize.width.toFloat(),
+                        viewHeight = viewSize.height.toFloat(),
+                        sourceWidth = currentFrame.width.toFloat(),
+                        sourceHeight = currentFrame.height.toFloat(),
+                    )
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        val start = viewport.map(down.position.x, down.position.y)
+                        var lastPoint = start
+                        var moved = false
+                        var dragActive = false
+                        var scrollActive = false
+                        var lastCentroid: Offset? = null
+                        if (start != null) viewModel.remoteScreenPointerMove(start.x, start.y)
+
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.filter { it.pressed }
+                                val now = event.changes.maxOfOrNull { it.uptimeMillis } ?: down.uptimeMillis
+                                if (pressed.size >= 2) {
+                                    if (!scrollActive) {
+                                        if (dragActive) {
+                                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                                            dragActive = false
+                                        }
+                                        scrollActive = true
+                                        lastCentroid = pressed.centroid()
+                                    } else {
+                                        val centroid = pressed.centroid()
+                                        lastCentroid?.let { previous ->
+                                            viewModel.scroll(
+                                                dx = (previous.x - centroid.x) * 0.75f,
+                                                dy = (previous.y - centroid.y) * 0.75f,
+                                            )
+                                        }
+                                        lastCentroid = centroid
+                                    }
+                                } else {
+                                    if (scrollActive) {
+                                        viewModel.scroll(0f, 0f, finish = true)
+                                        scrollActive = false
+                                        lastCentroid = null
+                                    }
+                                    val change = pressed.firstOrNull()
+                                    if (change != null) {
+                                        val distance = hypot(
+                                            change.position.x - down.position.x,
+                                            change.position.y - down.position.y,
+                                        )
+                                        if (distance > tapSlop) moved = true
+                                        val mapped = viewport.map(change.position.x, change.position.y)
+                                        if (mapped != null) {
+                                            if (moved && !dragActive && now - down.uptimeMillis > 320L) {
+                                                if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                                                dragActive = true
+                                            }
+                                            viewModel.remoteScreenPointerMove(mapped.x, mapped.y)
+                                            lastPoint = mapped
+                                        }
+                                    }
+                                }
+                                event.changes.forEach { change ->
+                                    if (change.changedToDown() || change.changedToUp() || change.positionChanged()) {
+                                        change.consume()
+                                    }
+                                }
+                                if (pressed.isEmpty()) break
+                            }
+                        } finally {
+                            if (scrollActive) viewModel.scroll(0f, 0f, finish = true)
+                            if (dragActive) viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                        }
+                        if (!moved && start != null && lastPoint != null) {
+                            if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            viewModel.remoteScreenClick(start.x, start.y)
+                        }
+                    }
+                }
+        ) {
+            if (frame != null) {
+                Image(
+                    bitmap = frame.bitmap.asImageBitmap(),
+                    contentDescription = "Remote screen",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                Column(
+                    Modifier
+                        .align(Alignment.Center)
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(Icons.Rounded.Computer, contentDescription = null, tint = Acid, modifier = Modifier.size(42.dp))
+                    Spacer(Modifier.height(10.dp))
+                    Text(state.screenStatus, color = Mist, fontWeight = FontWeight.Bold)
+                    Text(activeSource?.label ?: "Select a source and start streaming", color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Surface(
+                color = Graphite.copy(alpha = 0.72f),
+                contentColor = Mist,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp),
+            ) {
+                Text(
+                    state.screenStatus,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (fullscreen) {
+                RemoteScreenFullscreenBar(
+                    status = state.screenStatus,
+                    onExit = { viewModel.setRemoteScreenFullscreen(false) },
+                    onReconnect = { viewModel.startScreenStream() },
+                    onKeyboard = { quickKeyboardVisible = !quickKeyboardVisible },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp, start = 10.dp, end = 10.dp),
+                )
+                if (quickKeyboardVisible) {
+                    Box(
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(14.dp),
+                    ) {
+                        Surface(
+                            color = Graphite.copy(alpha = 0.90f),
+                            contentColor = Mist,
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            OutlinedTextField(
+                                value = keyboardText,
+                                onValueChange = { next ->
+                                    viewModel.sendLiveKeyboardEdit(keyboardText, next)
+                                    keyboardText = next
+                                },
+                                label = { Text("Quick text") },
+                                singleLine = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (!fullscreen) {
+            AnimatedVisibility(state.screenError != null) {
+                ErrorStrip(state.screenError ?: "")
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        viewModel.pointerButton(PointerButton.Right, ButtonState.Pressed)
+                        viewModel.pointerButton(PointerButton.Right, ButtonState.Released)
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Right click")
+                }
+                OutlinedButton(onClick = { quickKeyboardVisible = !quickKeyboardVisible }, modifier = Modifier.weight(1f)) {
+                    Text("Quick keys")
+                }
+            }
+            AnimatedVisibility(quickKeyboardVisible) {
+                OutlinedTextField(
+                    value = keyboardText,
+                    onValueChange = { next ->
+                        viewModel.sendLiveKeyboardEdit(keyboardText, next)
+                        keyboardText = next
+                    },
+                    label = { Text("Quick text input") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun RemoteScreenFullscreenBar(
+    status: String,
+    onExit: () -> Unit,
+    onReconnect: () -> Unit,
+    onKeyboard: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        color = Graphite.copy(alpha = 0.78f),
+        contentColor = Mist,
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onExit) {
+                Icon(Icons.Rounded.FullscreenExit, contentDescription = "Exit fullscreen", tint = Mist)
+            }
+            Text(
+                status,
+                modifier = Modifier.weight(1f),
+                color = Mist,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            IconButton(onClick = onReconnect) {
+                Icon(Icons.Rounded.Refresh, contentDescription = "Reconnect", tint = Mist)
+            }
+            IconButton(onClick = onKeyboard) {
+                Icon(Icons.Rounded.Keyboard, contentDescription = "Keyboard", tint = Mist)
+            }
+            IconButton(onClick = onExit) {
+                Icon(Icons.Rounded.Close, contentDescription = "Close fullscreen", tint = Mist)
+            }
+        }
+    }
+}
+
+private fun List<androidx.compose.ui.input.pointer.PointerInputChange>.centroid(): Offset {
+    val pressed = filter { it.pressed }
+    if (pressed.isEmpty()) return Offset.Zero
+    val x = pressed.sumOf { it.position.x.toDouble() }.toFloat() / pressed.size
+    val y = pressed.sumOf { it.position.y.toDouble() }.toFloat() / pressed.size
+    return Offset(x, y)
+}
+
+@Composable
 private fun KeyboardScreen(viewModel: WaypadViewModel) {
     var text by remember { mutableStateOf("") }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -751,6 +1157,8 @@ private fun TroubleshootingScreen(state: WaypadUiState, viewModel: WaypadViewMod
                 DiagnosticLine("Connection", state.connectionState.name)
                 DiagnosticLine("Input backend", state.capabilities.inputBackend)
                 DiagnosticLine("Input status", state.capabilities.inputReason)
+                DiagnosticLine("Capture backend", state.capabilities.captureBackend)
+                DiagnosticLine("Capture status", state.capabilities.captureReason)
                 DiagnosticLine("Volume", yesNo(state.capabilities.volume))
                 DiagnosticLine("Brightness", yesNo(state.capabilities.brightness))
                 DiagnosticLine("Clipboard", yesNo(state.capabilities.clipboard))

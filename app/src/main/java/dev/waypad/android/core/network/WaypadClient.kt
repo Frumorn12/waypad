@@ -3,6 +3,8 @@ package dev.waypad.android.core.network
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.CapabilitySummary
 import dev.waypad.android.core.model.PointerButton
+import dev.waypad.android.core.model.ScreenSource
+import dev.waypad.android.core.model.ScreenStreamInfo
 import dev.waypad.android.core.model.TrustedHost
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -90,6 +92,14 @@ class WaypadClient {
         commandOneWay("pointer_move", JSONObject().put("dx", dx.toDouble()).put("dy", dy.toDouble()))
     }
 
+    suspend fun pointerMoveAbsolute(sourceId: String?, x: Float, y: Float) {
+        val body = JSONObject()
+            .put("x", x.toDouble())
+            .put("y", y.toDouble())
+        if (!sourceId.isNullOrBlank()) body.put("source_id", sourceId)
+        commandOneWay("pointer_move_absolute", body)
+    }
+
     suspend fun pointerButton(button: PointerButton, state: ButtonState) {
         command(
             "pointer_button",
@@ -136,6 +146,29 @@ class WaypadClient {
 
     suspend fun capabilities(): CapabilitySummary = withContext(Dispatchers.IO) {
         command("get_capabilities")?.toCapabilitySummary() ?: CapabilitySummary()
+    }
+
+    suspend fun listScreenSources(): List<ScreenSource> = withContext(Dispatchers.IO) {
+        val data = command("list_screen_sources") ?: return@withContext emptyList()
+        val sources = data.optJSONArray("sources") ?: return@withContext emptyList()
+        (0 until sources.length()).mapNotNull { index -> sources.optJSONObject(index)?.toScreenSource() }
+    }
+
+    suspend fun startScreenStream(
+        sourceId: String?,
+        maxFps: Int = 12,
+        jpegQuality: Int = 70,
+    ): ScreenStreamInfo = withContext(Dispatchers.IO) {
+        val body = JSONObject()
+            .put("max_fps", maxFps)
+            .put("jpeg_quality", jpegQuality)
+        if (!sourceId.isNullOrBlank()) body.put("source_id", sourceId)
+        command("start_screen_stream", body)?.toScreenStreamInfo()
+            ?: error("Daemon returned no screen stream information")
+    }
+
+    suspend fun stopScreenStream(sessionId: String) {
+        command("stop_screen_stream", JSONObject().put("session_id", sessionId))
     }
 
     fun close() {
@@ -191,11 +224,16 @@ class WaypadClient {
 private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
     if (this == null) return CapabilitySummary()
     val input = optJSONObject("input")
+    val capture = optJSONObject("capture")
     val system = optJSONObject("system")
     return CapabilitySummary(
         inputSupported = input?.optBoolean("supported") ?: false,
         inputReason = input?.optString("reason", "No input capability data") ?: "No input capability data",
         inputBackend = input?.optString("backend", "unknown") ?: "unknown",
+        captureSupported = capture?.optBoolean("supported") ?: false,
+        captureReason = capture?.optString("reason", "No capture capability data") ?: "No capture capability data",
+        captureBackend = capture?.optString("backend", "unknown") ?: "unknown",
+        captureRequiresApproval = capture?.optBoolean("requires_user_approval") ?: false,
         volume = system?.optBoolean("volume") ?: false,
         media = system?.optBoolean("media") ?: false,
         brightness = system?.optBoolean("brightness") ?: false,
@@ -204,3 +242,25 @@ private fun JSONObject?.toCapabilitySummary(): CapabilitySummary {
         suspend = system?.optBoolean("suspend") ?: false,
     )
 }
+
+private fun JSONObject.toScreenSource(): ScreenSource = ScreenSource(
+    id = getString("id"),
+    label = optString("label", getString("id")),
+    kind = optString("kind", "monitor"),
+    backend = optString("backend", "unknown"),
+    width = optInt("width"),
+    height = optInt("height"),
+    x = optInt("x"),
+    y = optInt("y"),
+    scale = optDouble("scale", 1.0),
+    focused = optBoolean("focused"),
+)
+
+private fun JSONObject.toScreenStreamInfo(): ScreenStreamInfo = ScreenStreamInfo(
+    sessionId = getString("session_id"),
+    streamPort = getInt("stream_port"),
+    token = getString("token"),
+    codec = optString("codec", "jpeg"),
+    transport = optString("transport", "waypad-frame-stream-v1"),
+    source = getJSONObject("source").toScreenSource(),
+)

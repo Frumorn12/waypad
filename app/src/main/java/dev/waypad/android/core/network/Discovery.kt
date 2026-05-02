@@ -52,6 +52,8 @@ class WaypadDiscovery(context: Context) {
                                 fingerprint = json.optString("host_fingerprint"),
                                 inputSupported = json.optBoolean("input_supported"),
                                 inputBackend = json.optString("input_backend", "unknown"),
+                                captureSupported = json.optBoolean("capture_supported"),
+                                captureBackend = json.optString("capture_backend", "unknown"),
                             )
                             results["${host.address}:${host.port}"] = host
                         }

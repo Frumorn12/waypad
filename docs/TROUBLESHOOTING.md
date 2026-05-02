@@ -53,6 +53,63 @@ Then tap "Approve portal" in the app and approve the prompt on the Linux host.
 
 If Diagnostics shows `hyprland-ipc`, the app is using the daemon's Hyprland fallback instead of the portal. That backend supports pointer movement, drag, mouse buttons, scroll, shortcuts, and live text through the focused host window. Normal ASCII text is injected as key events; unsupported text falls back to clipboard paste and temporarily replaces the current Wayland clipboard.
 
+## Remote Screen Shows No Sources
+
+Open Diagnostics and check the capture backend/reason. On the host:
+
+```bash
+waypad-daemon doctor
+systemctl --user status pipewire wireplumber xdg-desktop-portal
+```
+
+For CachyOS/Hyprland, install the portal and capture helpers:
+
+```bash
+sudo pacman -S xdg-desktop-portal xdg-desktop-portal-hyprland pipewire wireplumber gst-plugin-pipewire gst-plugins-good grim
+systemctl --user restart pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-hyprland
+```
+
+If the daemon reports `hyprland-grim`, monitor streaming can work through the Hyprland fallback even when the standard portal stream path is incomplete.
+
+## Remote Screen Says "Connection Closed" Or "Broken Pipe"
+
+Current Waypad daemons return `stream_port = 47771` and `transport = waypad-control-port-stream-v2`. The app connects to the same TCP port as the encrypted control channel and attaches the stream with a one-line token request. If logs show a random high port such as `33577`, the daemon is old; rebuild/reinstall the daemon and restart `waypad-daemon`.
+
+Collect Android logs while reproducing:
+
+```bash
+adb logcat -c
+adb logcat -v time | grep -E 'Waypad|WaypadScreenStream|Broken pipe|ConnectException|SocketTimeout'
+```
+
+On the host, watch:
+
+```bash
+journalctl --user -u waypad-daemon -f
+```
+
+Healthy logs include `stream_connect_success host=... port=47771` on Android and `screen stream client attached` on the daemon. If Android reports `ConnectException` to `47771`, confirm the phone can reach the host IP and that the daemon is listening on the LAN interface.
+
+## Fullscreen Shows Black Or Drops Stream
+
+Fullscreen should not recreate the stream. Enter fullscreen from the Screen tab, wait for the overlay to hide, then press Android Back to exit. If the video disappears, capture:
+
+```bash
+adb logcat -d -v time | grep -E 'remote_screen_fullscreen|fullscreen_system_ui|stream_close|screen_stream_failed'
+```
+
+The expected transition is `remote_screen_fullscreen enabled=true`, `fullscreen_system_ui_hide`, then `enabled=false`, `fullscreen_system_ui_show` with no `stream_close` in between.
+
+## Stream Works But Taps Do Not Control The PC
+
+Capture and input are separate host capabilities. The app can show the screen while input is blocked. Check Diagnostics:
+
+- `wayland-portal`: tap "Approve portal" in Pad mode and approve pointer/keyboard control on the PC.
+- `hyprland-ipc`: input should work through the daemon's Hyprland IPC fallback.
+- `noop`: input is unavailable; use screen viewing read-only until the daemon reports a supported input backend.
+
+Touches in black bars around the video are intentionally ignored because they do not map to desktop pixels.
+
 ## APK Build Fails
 
 Confirm JDK and Android SDK:

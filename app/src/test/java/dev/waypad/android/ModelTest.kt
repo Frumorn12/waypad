@@ -12,6 +12,8 @@ class ModelTest {
         val summary = CapabilitySummary()
         assertFalse(summary.inputSupported)
         assertEquals("unknown", summary.inputBackend)
+        assertFalse(summary.captureSupported)
+        assertEquals("unknown", summary.captureBackend)
     }
 
     @Test

@@ -7,7 +7,8 @@ Waypad Android is a single-module Kotlin/Compose app. It is intentionally small 
 | Package | Responsibility |
 | --- | --- |
 | `core.model` | Shared UI and protocol-facing model types. |
-| `core.network` | UDP discovery, handshake crypto, encrypted frames, command client. |
+| `core.network` | UDP discovery, handshake crypto, encrypted frames, command client, and screen frame stream client. |
+| `core.screen` | Aspect-ratio-aware coordinate mapping from phone surface to host source coordinates. |
 | `core.storage` | Android Keystore protected trusted-host storage. |
 | `ui` | Compose theme and screens. |
 | root package | Activity and ViewModel orchestration. |
@@ -18,6 +19,7 @@ Waypad Android is a single-module Kotlin/Compose app. It is intentionally small 
 - Discovery and manual IP entry.
 - Pairing code and fingerprint confirmation.
 - Touchpad remote.
+- Remote screen viewer and controller.
 - Keyboard and shortcut controls.
 - Media/system controls.
 - Settings.
@@ -28,6 +30,10 @@ Waypad Android is a single-module Kotlin/Compose app. It is intentionally small 
 
 The app uses a long-lived TCP socket for low latency interactive control. It does not use HTTP polling. UDP discovery is optional; manual IP entry works when broadcast is blocked.
 
+Remote screen mode negotiates a stream over the encrypted control channel, then opens a second short-token-protected TCP frame stream back to the daemon's stable control port. The stream socket starts with a single `stream_connect` JSON line and then switches to `WAYPAD_STREAM_V1` JPEG frames. Using the existing control port avoids the random high-port failures that show up on phones as `connection closed`, `broken pipe`, or connect timeouts when a LAN firewall blocks dynamic stream ports. The Android UI decodes frames into a Compose `Image` and keeps input delivery on the existing coalesced command queue.
+
+The current MVP does not bundle WebRTC. That avoids adding a partial signaling/media stack before the daemon has stable source selection and portal capability negotiation. The stream protocol is intentionally isolated so WebRTC/H.264 can replace it later.
+
 ## Storage
 
 Trusted hosts are serialized as JSON and encrypted before entering `SharedPreferences`. The AES key is generated inside `AndroidKeyStore` with GCM mode and randomized IVs.
@@ -35,3 +41,7 @@ Trusted hosts are serialized as JSON and encrypted before entering `SharedPrefer
 ## Wayland Reality
 
 The Android app does not pretend input is always available. It displays the daemon capability model and exposes "Approve portal" so the Linux user can grant RemoteDesktop portal permission locally. If Hyprland or the portal stack cannot provide RemoteDesktop, the app remains connected but input commands show the daemon's unsupported reason.
+
+Remote screen taps are mapped through `ScreenViewport`, which accounts for contain-fit scaling and letterboxing. Touches in black bars are ignored instead of being sent to the wrong desktop coordinate.
+
+Fullscreen is UI state only. Entering or exiting fullscreen hides/shows system bars and rearranges controls, but it does not intentionally stop the active stream session. Stream reconnect and manual stop remain explicit ViewModel operations.

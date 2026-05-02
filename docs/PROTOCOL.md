@@ -30,6 +30,7 @@ The app sends these command names:
 ```text
 prepare_input
 pointer_move
+pointer_move_absolute
 pointer_button
 scroll
 text
@@ -40,6 +41,33 @@ brightness
 clipboard_set
 system
 get_capabilities
+list_screen_sources
+start_screen_stream
+stop_screen_stream
 ```
 
 Unsupported actions are surfaced as host-provided error messages.
+
+## Remote Screen Stream
+
+The app sends `list_screen_sources`, lets the user choose a monitor/source when available, and starts the stream with `start_screen_stream`. The daemon returns:
+
+```json
+{
+  "session_id": "...",
+  "stream_port": 47771,
+  "token": "...",
+  "codec": "jpeg",
+  "transport": "waypad-control-port-stream-v2"
+}
+```
+
+For `waypad-control-port-stream-v2`, the app connects back to the daemon control port returned in `stream_port` and writes one JSON line before any encrypted control-channel handshake:
+
+```json
+{"type":"stream_connect","token":"..."}
+```
+
+The daemon attaches that TCP socket to the pending stream session, writes `WAYPAD_STREAM_V1`, then sends repeated `u32 header length`, `u32 payload length`, JSON header, and JPEG payload frames. Older `waypad-frame-stream-v1` daemons used a dynamic per-stream TCP port; the Android client still understands that shape, but current daemons use the stable control port to avoid LAN firewall/NAT failures on random high ports.
+
+Pointer input over the displayed stream uses `pointer_move_absolute` with source-local coordinates. The app maps phone touch positions through contain-fit scaling first, so letterboxed/pillarboxed areas are ignored.

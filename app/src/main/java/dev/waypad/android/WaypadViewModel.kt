@@ -11,12 +11,20 @@ import dev.waypad.android.core.model.CapabilitySummary
 import dev.waypad.android.core.model.ConnectionState
 import dev.waypad.android.core.model.DiscoveredHost
 import dev.waypad.android.core.model.PointerButton
+import dev.waypad.android.core.model.RemoteScreenConnectionState
+import dev.waypad.android.core.model.ScreenSource
+import dev.waypad.android.core.model.ScreenStreamInfo
 import dev.waypad.android.core.model.TrustedHost
+import dev.waypad.android.core.network.RemoteScreenFrame
+import dev.waypad.android.core.network.RemoteScreenStreamClient
 import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
+import dev.waypad.android.core.screen.RemoteScreenSessionEvent
+import dev.waypad.android.core.screen.RemoteScreenSessionMachine
 import dev.waypad.android.core.storage.TrustedHostStore
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 enum class Screen {
@@ -31,6 +40,7 @@ enum class Screen {
     Discovery,
     Pairing,
     Remote,
+    RemoteDisplay,
     Keyboard,
     Controls,
     Settings,
@@ -56,6 +66,15 @@ data class WaypadUiState(
     val remoteGestureMode: RemoteGestureMode = RemoteGestureMode.Idle,
     val remotePointerCount: Int = 0,
     val remoteInputBacklog: Int = 0,
+    val screenSources: List<ScreenSource> = emptyList(),
+    val selectedScreenSourceId: String? = null,
+    val screenStreamInfo: ScreenStreamInfo? = null,
+    val screenFrame: RemoteScreenFrame? = null,
+    val screenStreaming: Boolean = false,
+    val screenConnectionState: RemoteScreenConnectionState = RemoteScreenConnectionState.Idle,
+    val remoteScreenFullscreen: Boolean = false,
+    val screenStatus: String = "Screen stream idle",
+    val screenError: String? = null,
 )
 
 class WaypadViewModel(application: Application) : AndroidViewModel(application) {
@@ -65,15 +84,20 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         const val INTERACTION_GRACE_MS = 180L
         const val INTERACTION_KEEPALIVE_INITIAL_MS = 2_000L
         const val INTERACTION_KEEPALIVE_INTERVAL_MS = 5_000L
+        const val SCREEN_STREAM_MAX_RETRIES = 3
     }
 
     private val discovery = WaypadDiscovery(application)
     private val client = WaypadClient()
+    private val screenStreamClient = RemoteScreenStreamClient()
     private val store = TrustedHostStore(application)
     private val inputCommands = Channel<RemoteInputCommand>(capacity = INPUT_QUEUE_CAPACITY)
     private val queuedInputCommands = AtomicInteger(0)
     private var interactionKeepAliveJob: Job? = null
     private var interactionEndJob: Job? = null
+    private var screenStreamJob: Job? = null
+    private var screenStreamDesired = false
+    private val screenSessionMachine = RemoteScreenSessionMachine()
     private var activeInteractionSessionId = 0L
     private var nextInteractionSessionId = 0L
     private val _state = MutableStateFlow(
@@ -87,6 +111,9 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun go(screen: Screen) {
         _state.update { it.copy(screen = screen, error = null) }
+        if (screen == Screen.RemoteDisplay && _state.value.screenSources.isEmpty()) {
+            loadScreenSources()
+        }
     }
 
     fun setPairingCode(code: String) {
@@ -143,6 +170,8 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 fingerprint = "",
                 inputSupported = false,
                 inputBackend = "manual",
+                captureSupported = false,
+                captureBackend = "manual",
             )
         )
     }
@@ -210,6 +239,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun disconnect() {
         Log.i(TAG, "connection_state=disconnected user_requested=true")
+        stopScreenStream()
         interactionKeepAliveJob?.cancel()
         interactionEndJob?.cancel()
         activeInteractionSessionId = 0L
@@ -223,6 +253,15 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 remoteGestureMode = RemoteGestureMode.Idle,
                 remotePointerCount = 0,
                 remoteInputBacklog = 0,
+                screenSources = emptyList(),
+                selectedScreenSourceId = null,
+                screenStreamInfo = null,
+                screenFrame = null,
+                screenStreaming = false,
+                screenConnectionState = RemoteScreenConnectionState.Idle,
+                remoteScreenFullscreen = false,
+                screenStatus = "Screen stream idle",
+                screenError = null,
             )
         }
         clearQueuedInput()
@@ -359,6 +398,220 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(capabilities = capabilities, status = "Capabilities refreshed") }
         }
     }
+
+    fun loadScreenSources() {
+        launchCommand("Loading screen sources...") {
+            val sources = client.listScreenSources()
+            _state.update { current ->
+                val selected = current.selectedScreenSourceId
+                    ?.takeIf { id -> sources.any { it.id == id } }
+                    ?: sources.firstOrNull { it.focused }?.id
+                    ?: sources.firstOrNull()?.id
+                current.copy(
+                    screenSources = sources,
+                    selectedScreenSourceId = selected,
+                    screenStatus = if (sources.isEmpty()) "No screen sources available" else "Found ${sources.size} screen source(s)",
+                    screenError = null,
+                )
+            }
+        }
+    }
+
+    fun selectScreenSource(sourceId: String) {
+        _state.update {
+            it.copy(
+                selectedScreenSourceId = sourceId,
+                screenStatus = "Selected ${it.screenSources.firstOrNull { source -> source.id == sourceId }?.label ?: sourceId}",
+            )
+        }
+    }
+
+    fun startScreenStream() {
+        val host = _state.value.connectedHost ?: run {
+            _state.update { it.copy(screenError = "Connect to a host before starting a screen stream.") }
+            return
+        }
+        val existingSessionId = _state.value.screenStreamInfo?.sessionId
+        screenStreamDesired = true
+        screenStreamJob?.cancel()
+        screenStreamJob = viewModelScope.launch {
+            if (existingSessionId != null) {
+                stopScreenStreamOnHost(existingSessionId, "before_restart")
+            }
+            _state.update {
+                it.copy(
+                    screenStreaming = true,
+                    screenFrame = null,
+                    screenStatus = "Starting screen stream...",
+                    screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Start),
+                    screenError = null,
+                )
+            }
+            val selected = _state.value.selectedScreenSourceId
+            var attempt = 0
+            while (isActive && screenStreamDesired && attempt < SCREEN_STREAM_MAX_RETRIES) {
+                attempt += 1
+                var info: ScreenStreamInfo? = null
+                val result = runCatching {
+                    if (attempt > 1) {
+                        _state.update {
+                            it.copy(
+                                screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Retry),
+                                screenStatus = "Reconnecting screen stream ($attempt/$SCREEN_STREAM_MAX_RETRIES)...",
+                            )
+                        }
+                        delay(500L * attempt)
+                    }
+                    val streamInfo = client.startScreenStream(selected, maxFps = 12, jpegQuality = 70)
+                    info = streamInfo
+                    Log.i(TAG, "screen_stream_start attempt=$attempt session=${streamInfo.sessionId} source=${streamInfo.source.id} port=${streamInfo.streamPort}")
+                    _state.update {
+                        it.copy(
+                            screenStreamInfo = streamInfo,
+                            selectedScreenSourceId = streamInfo.source.id,
+                            screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Negotiated),
+                            screenStatus = "Connecting stream...",
+                            screenError = null,
+                        )
+                    }
+                    var sawFrame = false
+                    screenStreamClient.collect(
+                        host = host.address,
+                        port = streamInfo.streamPort,
+                        token = streamInfo.token,
+                        transport = streamInfo.transport,
+                    ) { frame ->
+                        if (!sawFrame) {
+                            sawFrame = true
+                            transitionScreenSession(RemoteScreenSessionEvent.FirstFrame)
+                        }
+                        _state.update {
+                            it.copy(
+                                screenFrame = frame,
+                                screenStreaming = true,
+                                screenConnectionState = RemoteScreenConnectionState.Streaming,
+                                screenStatus = "Live ${frame.width}x${frame.height} ${frame.byteCount / 1024} KiB",
+                                screenError = null,
+                            )
+                        }
+                    }
+                }
+                info?.sessionId?.let { sessionId ->
+                    stopScreenStreamOnHost(sessionId, "cleanup")
+                }
+                result.onFailure { throwable ->
+                    if (throwable is kotlinx.coroutines.CancellationException) throw throwable
+                    if (!screenStreamDesired || !isActive) {
+                        Log.i(TAG, "screen_stream_failure_ignored_after_stop message=${throwable.message}")
+                        return@onFailure
+                    }
+                    Log.w(TAG, "screen_stream_failed attempt=$attempt desired=$screenStreamDesired", throwable)
+                    val message = throwable.message ?: throwable::class.java.simpleName
+                    val failedState = transitionScreenSession(RemoteScreenSessionEvent.Fail)
+                    val willRetry = attempt < SCREEN_STREAM_MAX_RETRIES && screenStreamDesired
+                    _state.update {
+                        it.copy(
+                            screenStreaming = willRetry,
+                            screenStreamInfo = null,
+                            screenConnectionState = failedState,
+                            screenStatus = if (willRetry) {
+                                "Screen stream dropped; retrying..."
+                            } else {
+                                "Screen stream stopped"
+                            },
+                            screenError = message,
+                        )
+                    }
+                }.onSuccess {
+                    Log.i(TAG, "screen_stream_closed attempt=$attempt desired=$screenStreamDesired")
+                    if (screenStreamDesired && isActive) {
+                        _state.update {
+                            it.copy(
+                                screenStreaming = false,
+                                screenStreamInfo = null,
+                                screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Retry),
+                                screenStatus = "Screen stream closed; reconnecting...",
+                            )
+                        }
+                    }
+                }
+            }
+            if (!screenStreamDesired) {
+                _state.update {
+                    it.copy(
+                        screenStreaming = false,
+                        screenStreamInfo = null,
+                        screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Close),
+                        screenStatus = "Screen stream idle",
+                    )
+                }
+            } else if (attempt >= SCREEN_STREAM_MAX_RETRIES) {
+                _state.update {
+                    it.copy(
+                        screenStreaming = false,
+                        screenStreamInfo = null,
+                        screenConnectionState = RemoteScreenConnectionState.Failed,
+                        screenStatus = "Screen stream failed after retries",
+                    )
+                }
+            }
+        }
+    }
+
+    fun stopScreenStream() {
+        screenStreamDesired = false
+        val sessionId = _state.value.screenStreamInfo?.sessionId
+        screenStreamJob?.cancel()
+        screenStreamJob = null
+        if (sessionId != null) {
+            viewModelScope.launch {
+                stopScreenStreamOnHost(sessionId, "user_stop")
+            }
+        }
+        _state.update {
+            it.copy(
+                screenStreaming = false,
+                screenStreamInfo = null,
+                screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Close),
+                screenStatus = "Screen stream idle",
+            )
+        }
+    }
+
+    fun setRemoteScreenFullscreen(enabled: Boolean) {
+        val current = _state.value.remoteScreenFullscreen
+        if (current == enabled) return
+        Log.i(TAG, "remote_screen_fullscreen enabled=$enabled")
+        _state.update { it.copy(remoteScreenFullscreen = enabled) }
+    }
+
+    private suspend fun stopScreenStreamOnHost(sessionId: String, reason: String) {
+        withContext(NonCancellable) {
+            runCatching { client.stopScreenStream(sessionId) }
+                .onSuccess { Log.i(TAG, "screen_stream_stop_sent reason=$reason session=$sessionId") }
+                .onFailure { Log.w(TAG, "screen_stream_stop_failed reason=$reason session=$sessionId", it) }
+        }
+    }
+
+    private fun transitionScreenSession(event: RemoteScreenSessionEvent): RemoteScreenConnectionState {
+        val next = screenSessionMachine.transition(event)
+        Log.d(TAG, "screen_session_state event=$event state=$next")
+        return next
+    }
+
+    fun remoteScreenPointerMove(x: Float, y: Float) {
+        if (!x.isFinite() || !y.isFinite()) return
+        enqueueInput(RemoteInputCommand.PointerMoveAbsolute(activeScreenSourceId(), x, y))
+    }
+
+    fun remoteScreenClick(x: Float, y: Float, button: PointerButton = PointerButton.Left) {
+        remoteScreenPointerMove(x, y)
+        pointerButton(button, ButtonState.Pressed)
+        pointerButton(button, ButtonState.Released)
+    }
+
+    private fun activeScreenSourceId(): String? =
+        _state.value.screenStreamInfo?.source?.id ?: _state.value.selectedScreenSourceId
 
     private fun launchCommand(status: String?, block: suspend () -> Unit) {
         if (status != null) _state.update { it.copy(status = status, error = null) }
@@ -505,6 +758,22 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                     sendInput("pointer_move") { client.pointerMove(dx, dy) }
                 }
             }
+            is RemoteInputCommand.PointerMoveAbsolute -> {
+                var latest: RemoteInputCommand.PointerMoveAbsolute = command
+                while (true) {
+                    val next = pollInputCommand() ?: break
+                    if (next is RemoteInputCommand.PointerMoveAbsolute && next.sourceId == latest.sourceId) {
+                        latest = next
+                    } else {
+                        pending.addFirst(next)
+                        break
+                    }
+                }
+                Log.v(TAG, "transport_send type=pointer_move_absolute source=${latest.sourceId} x=${latest.x} y=${latest.y}")
+                sendInput("pointer_move_absolute") {
+                    client.pointerMoveAbsolute(latest.sourceId, latest.x, latest.y)
+                }
+            }
             is RemoteInputCommand.Scroll -> {
                 var dx = command.dx
                 var dy = command.dy
@@ -581,6 +850,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         inputCommands.close()
         interactionKeepAliveJob?.cancel()
         interactionEndJob?.cancel()
+        screenStreamJob?.cancel()
         client.close()
         super.onCleared()
     }
@@ -589,10 +859,12 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 private sealed interface RemoteInputCommand {
     val isTerminal: Boolean
         get() = this !is RemoteInputCommand.PointerMove &&
+            this !is RemoteInputCommand.PointerMoveAbsolute &&
             this !is RemoteInputCommand.Scroll &&
             this !is RemoteInputCommand.Ping
 
     data class PointerMove(val dx: Float, val dy: Float) : RemoteInputCommand
+    data class PointerMoveAbsolute(val sourceId: String?, val x: Float, val y: Float) : RemoteInputCommand
     data class Scroll(val dx: Float, val dy: Float) : RemoteInputCommand
     data class PointerButton(val button: dev.waypad.android.core.model.PointerButton, val state: ButtonState) : RemoteInputCommand
     data object ScrollFinish : RemoteInputCommand
