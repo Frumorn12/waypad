@@ -16,7 +16,7 @@ This is an MVP Android client. It is buildable as a debug APK and implements the
 - Android Keystore protected trusted-host storage.
 - Low-latency remote touchpad with coalesced pointer movement, tap, double tap, hold-drag, drag lock, buttons, and two-finger scroll gestures.
 - Remote screen mode with source selection, live JPEG frame display, aspect-ratio-aware touch mapping, tap/click, hold-drag, scroll, right click, and quick text input.
-- External Android mouse and keyboard forwarding while connected to Pad or Screen mode; gamepads/controllers are detected and reported with host capability limits.
+- External Android mouse, keyboard, and controller forwarding while connected to Pad or Screen mode, subject to host capabilities.
 - Live keyboard text input and shortcut buttons.
 - Media, volume, brightness, lock, and suspend controls gated by daemon capabilities.
 - Diagnostics screen for Wayland portal limitations.
@@ -119,7 +119,7 @@ If the host reports `hyprland-ipc`, the daemon is using the Hyprland fallback be
 
 Remote Screen mode depends on the daemon's `capture` capability. Standard Wayland capture uses XDG Desktop Portal ScreenCast plus PipeWire. On Hyprland, the daemon can also expose monitor sources through an isolated `grim` fallback. Multi-monitor hosts show selectable sources; portal chooser sources may open a local compositor permission dialog on the PC.
 
-External USB/Bluetooth devices connected to the Android phone are classified with Android `InputDevice` sources. Mouse, touchpad, and keyboard events are forwarded through the daemon's active pointer/keyboard backend. Controller/gamepad devices are detected and normalized, but generic virtual gamepad injection is not currently available through Wayland RemoteDesktop or the Hyprland IPC fallback, so the app surfaces the host's unsupported controller capability instead of pretending it works.
+External USB/Bluetooth devices connected to the Android phone are classified with Android `InputDevice` sources. Mouse, touchpad, and keyboard events are forwarded through the daemon's active pointer/keyboard backend. Controller/gamepad devices are detected, normalized, and forwarded when the host daemon reports `external_input.controller = true`; on Linux this requires the daemon user to have access to `/dev/uinput` so the host can expose a virtual gamepad to desktop apps and browser Gamepad APIs.
 
 ## Security Notes
 

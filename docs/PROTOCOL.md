@@ -79,7 +79,7 @@ controller_button
 controller_axis
 ```
 
-Keyboard events carry XKB keysyms plus pressed/released state. Controller axes are normalized to `[-1.0, 1.0]` with Android motion-range deadzones applied before transport. The host capability field `external_input.controller` is authoritative; current Wayland portal and Hyprland IPC backends support external mouse/keyboard forwarding but report generic controller injection as unsupported.
+Keyboard events carry XKB keysyms plus pressed/released state. Controller axes are normalized to `[-1.0, 1.0]` with Android motion-range deadzones applied before transport. The host capability field `external_input.controller` is authoritative; on Linux it is true when the daemon can expose a `uinput` virtual gamepad.
 
 ## Remote Screen Stream
 

@@ -138,7 +138,7 @@ Healthy logs include `device_inventory`, optional `pointer_capture_request`, and
 
 ## Controller Detected But Does Not Control The PC
 
-Android gamepad/controller detection is implemented, including buttons, sticks, triggers, and hat axes. Generic virtual gamepad injection is not currently exposed by the Wayland RemoteDesktop portal or the Hyprland IPC fallback, so Waypad reports controller forwarding as unsupported unless a future host backend adds it. This is expected; mouse and keyboard forwarding can still work from the same phone.
+Android gamepad/controller detection is implemented, including buttons, sticks, triggers, and hat axes. If Diagnostics shows controller forwarding as unsupported, run `waypad-daemon doctor` on the PC and check `external_input.controller`. Linux controller forwarding uses a daemon-side `uinput` virtual gamepad, so `/dev/uinput` must exist and be writable by the daemon user. Mouse and keyboard forwarding can still work from the same phone even when controller support is blocked by host permissions.
 
 ## APK Build Fails
 
