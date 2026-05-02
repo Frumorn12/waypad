@@ -3,6 +3,7 @@ package dev.waypad.android.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,7 +27,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -53,9 +53,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,7 +69,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -77,6 +81,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.waypad.android.Screen
 import dev.waypad.android.WaypadUiState
 import dev.waypad.android.WaypadViewModel
+import dev.waypad.android.R
 import dev.waypad.android.core.model.ButtonState
 import dev.waypad.android.core.model.ConnectionState
 import dev.waypad.android.core.model.DiscoveredHost
@@ -180,22 +185,13 @@ private fun BrandMark() {
         Modifier
             .size(38.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Mist)
+            .background(Color.Transparent)
     ) {
-        Text(
-            "W",
-            modifier = Modifier.align(Alignment.Center),
-            color = Ink,
-            fontWeight = FontWeight.Black,
-            fontFamily = FontFamily.Monospace,
-        )
-        Box(
-            Modifier
-                .align(Alignment.BottomEnd)
-                .padding(6.dp)
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(Acid)
+        Image(
+            painter = painterResource(R.drawable.waypad_brand_cutout),
+            contentDescription = "Waypad",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
         )
     }
 }
@@ -333,7 +329,7 @@ private fun HostCard(host: DiscoveredHost, onClick: () -> Unit) {
                 Text("${host.address}:${host.port}", color = Muted, style = MaterialTheme.typography.bodySmall)
                 Text(shortFingerprint(host.fingerprint), color = Muted, style = MaterialTheme.typography.labelSmall)
             }
-            StatusPill(if (host.inputSupported) "Portal ready" else host.inputBackend)
+            StatusPill(if (host.inputSupported) host.inputBackend else "Input blocked")
         }
     }
 }
@@ -373,10 +369,36 @@ private fun PairingScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
 @Composable
 private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
     val haptics = LocalHapticFeedback.current
+    var dragLocked by remember { mutableStateOf(false) }
+    var longPressDragActive by remember { mutableStateOf(false) }
+    val currentDragLocked by rememberUpdatedState(dragLocked)
+
+    fun setDragLocked(enabled: Boolean) {
+        if (dragLocked == enabled) return
+        if (enabled) {
+            if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+        } else {
+            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+        }
+        dragLocked = enabled
+        longPressDragActive = false
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (currentDragLocked) {
+                viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+            }
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StatusPill(if (state.capabilities.inputSupported) "Input: ${state.capabilities.inputBackend}" else "Input blocked")
-            TextButton(onClick = { viewModel.prepareInput() }) { Text("Approve portal") }
+            TextButton(onClick = { viewModel.prepareInput() }) {
+                Text(if (state.capabilities.inputBackend == "wayland-portal") "Approve portal" else "Refresh input")
+            }
         }
         Spacer(Modifier.height(12.dp))
         Box(
@@ -400,14 +422,17 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                             viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
                         },
                         onLongPress = {
-                            if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                            if (!dragLocked) {
+                                longPressDragActive = true
+                                if (state.haptics) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.pointerButton(PointerButton.Left, ButtonState.Pressed)
+                            }
                         },
                     )
                 }
-                .pointerInput(Unit) {
+                .pointerInput(dragLocked) {
                     awaitEachGesture {
-                        awaitFirstDown()
+                        awaitFirstDown(requireUnconsumed = false)
                         var lastCentroid: Offset? = null
                         while (true) {
                             val event = awaitPointerEvent()
@@ -429,7 +454,10 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                             lastCentroid = centroid
                         }
                         viewModel.scroll(0f, 0f, finish = true)
-                        viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                        if (longPressDragActive && !dragLocked) {
+                            viewModel.pointerButton(PointerButton.Left, ButtonState.Released)
+                            longPressDragActive = false
+                        }
                     }
                 }
         ) {
@@ -443,6 +471,16 @@ private fun RemoteScreen(state: WaypadUiState, viewModel: WaypadViewModel) {
                 Spacer(Modifier.height(10.dp))
                 Text("Touchpad", color = Mist, fontWeight = FontWeight.Bold)
                 Text("Tap, double tap, hold-drag, two-finger scroll", color = Muted, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (dragLocked) {
+            Button(onClick = { setDragLocked(false) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Release drag")
+            }
+        } else {
+            OutlinedButton(onClick = { setDragLocked(true) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Drag lock")
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -473,14 +511,23 @@ private fun KeyboardScreen(viewModel: WaypadViewModel) {
             GlassCard {
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { text = it },
-                    label = { Text("Text to send") },
+                    onValueChange = { next ->
+                        viewModel.sendLiveKeyboardEdit(text, next)
+                        text = next
+                    },
+                    label = { Text("Live keyboard input") },
                     minLines = 4,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(10.dp))
-                Button(onClick = { viewModel.sendText(text); text = "" }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Send text")
+                Text(
+                    "Typing here is forwarded immediately to the focused PC window. On Hyprland without RemoteDesktop portal, ASCII text uses IPC key events and unsupported text falls back to clipboard paste.",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = { text = "" }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Clear local buffer")
                 }
             }
         }

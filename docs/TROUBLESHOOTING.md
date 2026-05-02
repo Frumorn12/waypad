@@ -51,6 +51,8 @@ systemctl --user restart xdg-desktop-portal xdg-desktop-portal-hyprland
 
 Then tap "Approve portal" in the app and approve the prompt on the Linux host.
 
+If Diagnostics shows `hyprland-ipc`, the app is using the daemon's Hyprland fallback instead of the portal. That backend supports pointer movement, drag, mouse buttons, scroll, shortcuts, and live text through the focused host window. Normal ASCII text is injected as key events; unsupported text falls back to clipboard paste and temporarily replaces the current Wayland clipboard.
+
 ## APK Build Fails
 
 Confirm JDK and Android SDK:

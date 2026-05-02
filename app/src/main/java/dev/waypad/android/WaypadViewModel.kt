@@ -13,10 +13,13 @@ import dev.waypad.android.core.model.TrustedHost
 import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
 import dev.waypad.android.core.storage.TrustedHostStore
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 enum class Screen {
     Onboarding,
@@ -50,6 +53,9 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private val discovery = WaypadDiscovery(application)
     private val client = WaypadClient()
     private val store = TrustedHostStore(application)
+    private var pendingPointerDx = 0f
+    private var pendingPointerDy = 0f
+    private var pointerPumpJob: Job? = null
     private val _state = MutableStateFlow(
         WaypadUiState(trustedHosts = store.load())
     )
@@ -188,12 +194,18 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     fun prepareInput() = launchCommand("Requesting portal approval...") { client.prepareInput() }
 
-    fun pointerMove(dx: Float, dy: Float) = launchQuiet { client.pointerMove(dx, dy) }
+    fun pointerMove(dx: Float, dy: Float) {
+        if (!dx.isFinite() || !dy.isFinite()) return
+        pendingPointerDx += dx
+        pendingPointerDy += dy
+        if (pointerPumpJob?.isActive == true) return
+        pointerPumpJob = viewModelScope.launch { drainPointerMoves() }
+    }
 
     fun pointerButton(button: PointerButton, state: ButtonState) {
         if (_state.value.capabilities.inputBackend == "hyprland-hyprctl") {
             if (state == ButtonState.Pressed) {
-                _state.update { it.copy(status = "Hyprland fallback moves the pointer only; clicks need RemoteDesktop portal.") }
+                _state.update { it.copy(status = "Legacy Hyprland fallback moves only the pointer; update waypad-daemon for IPC clicks.") }
             }
             return
         }
@@ -203,7 +215,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     fun scroll(dx: Float, dy: Float, finish: Boolean = false) {
         if (_state.value.capabilities.inputBackend == "hyprland-hyprctl") {
             if (!finish) {
-                _state.update { it.copy(status = "Scroll needs RemoteDesktop portal on Hyprland.") }
+                _state.update { it.copy(status = "Legacy Hyprland fallback cannot scroll; update waypad-daemon for IPC scroll.") }
             }
             return
         }
@@ -211,6 +223,24 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun sendText(text: String) = launchCommand("Sending text...") { client.text(text) }
+
+    fun sendLiveKeyboardEdit(previous: String, next: String) {
+        when {
+            next.startsWith(previous) -> {
+                val appended = next.removePrefix(previous)
+                if (appended.isNotEmpty()) launchQuiet { client.text(appended) }
+            }
+            previous.startsWith(next) -> {
+                val removed = (previous.length - next.length).coerceAtMost(32)
+                if (removed > 0) launchQuiet {
+                    repeat(removed) { client.shortcut("backspace") }
+                }
+            }
+            next != previous -> {
+                launchQuiet { client.text(next) }
+            }
+        }
+    }
 
     fun shortcut(vararg keys: String) = launchCommand(null) { client.shortcut(*keys) }
 
@@ -258,6 +288,22 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         fail("Input failed", throwable)
                     }
                 }
+        }
+    }
+
+    private suspend fun drainPointerMoves() {
+        while (abs(pendingPointerDx) + abs(pendingPointerDy) > 0.1f) {
+            val dx = pendingPointerDx
+            val dy = pendingPointerDy
+            pendingPointerDx = 0f
+            pendingPointerDy = 0f
+            runCatching { client.pointerMove(dx, dy) }
+                .onFailure { throwable ->
+                    if (!throwable.isTransportFailure() || !reconnectCurrentHost()) {
+                        fail("Input failed", throwable)
+                    }
+                }
+            delay(8)
         }
     }
 

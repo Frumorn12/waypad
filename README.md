@@ -6,7 +6,7 @@ The design is dark-first, high-contrast, minimal, and optimized for modern one-h
 
 ## Status
 
-This is an MVP Android client. It is buildable as a debug APK and implements the core pairing and control path. The paired Linux daemon remains the authority for capabilities; if Wayland portal input is unavailable on the host, the app shows that limitation instead of pretending input can work.
+This is an MVP Android client. It is buildable as a debug APK and implements the core pairing and control path. The paired Linux daemon remains the authority for capabilities; if Wayland portal input is unavailable on the host, the app shows that limitation or the daemon-provided Hyprland IPC fallback instead of pretending every compositor behaves like X11.
 
 ## Features
 
@@ -14,11 +14,11 @@ This is an MVP Android client. It is buildable as a debug APK and implements the
 - Encrypted TCP protocol compatible with `waypad-daemon`.
 - Host key fingerprint validation and pinning.
 - Android Keystore protected trusted-host storage.
-- Remote touchpad with tap, double tap, hold-drag, buttons, and two-finger scroll gestures.
-- Keyboard text input and shortcut buttons.
+- Low-latency remote touchpad with coalesced pointer movement, tap, double tap, hold-drag, drag lock, buttons, and two-finger scroll gestures.
+- Live keyboard text input and shortcut buttons.
 - Media, volume, brightness, lock, and suspend controls gated by daemon capabilities.
 - Diagnostics screen for Wayland portal limitations.
-- Adaptive icon placeholder and Material 3 Compose UI.
+- Processed Waypad brand artwork, adaptive launcher icon, and Material 3 Compose UI.
 
 ## Repository Layout
 
@@ -99,7 +99,7 @@ waypad-daemon pair-code
 
 6. For manual pairing, compare the fingerprint printed by the daemon with the app.
 
-7. After connecting, tap "Approve portal" and approve the portal dialog on the Linux host.
+7. After connecting, tap "Approve portal" only when the backend is `wayland-portal`, then approve the portal dialog on the Linux host. On `hyprland-ipc`, input is ready after pairing.
 
 ## Wayland and Hyprland Notes
 
@@ -111,7 +111,7 @@ Recommended host packages on Arch/CachyOS:
 sudo pacman -S xdg-desktop-portal xdg-desktop-portal-hyprland wireplumber playerctl brightnessctl wl-clipboard
 ```
 
-If the host reports that RemoteDesktop is unavailable, the app can still pair and show diagnostics, but touchpad and keyboard commands will fail until the host portal stack supports them.
+If the host reports `hyprland-ipc`, the daemon is using the Hyprland fallback because RemoteDesktop is unavailable. Pointer movement, drag, click, scroll, shortcuts, and live text are available. Normal ASCII text is injected as key events; unsupported characters fall back to clipboard paste and temporarily replace the host clipboard. If the host reports `noop`, open Diagnostics and run `waypad-daemon doctor` on Linux.
 
 ## Security Notes
 
