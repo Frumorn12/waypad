@@ -261,8 +261,10 @@ without PipeWire capture and is **not suitable for gaming**.
 
 1. On the Remote Display tab, tap "Sources" to list available sources
 2. Select **"Portal picker (60 FPS capable)"**
-3. A ScreenCast approval dialog appears on the Linux host — approve it
-4. The stream now uses the real-time PipeWire pipeline
+3. **First time only**: A ScreenCast approval dialog appears on the Linux host — approve it
+4. After first approval, the daemon saves a restore token and subsequent streams
+   start automatically without any dialog
+5. The stream now uses the real-time PipeWire pipeline
 
 If Portal picker doesn't appear, install on the Linux host:
 ```bash
@@ -271,6 +273,12 @@ sudo pacman -S pipewire wireplumber xdg-desktop-portal \
 systemctl --user restart pipewire wireplumber \
   xdg-desktop-portal xdg-desktop-portal-hyprland
 ```
+
+If Portal picker exists but **no approval dialog appears on Linux**:
+1. Delete any stale restore token: `rm ~/.config/waypad-daemon/portal_restore_token.json`
+2. Restart daemon: `systemctl --user restart waypad-daemon`
+3. Check the dialog isn't hidden behind other windows
+4. Verify portal: `systemctl --user status xdg-desktop-portal-hyprland`
 
 ### Check delivered vs target FPS
 
