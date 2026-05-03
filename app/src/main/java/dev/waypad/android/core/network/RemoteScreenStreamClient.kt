@@ -5,7 +5,9 @@ import android.graphics.BitmapFactory
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -16,11 +18,14 @@ import java.nio.ByteBuffer
 import java.net.Socket
 import java.net.InetSocketAddress
 import java.net.SocketTimeoutException
+import java.util.concurrent.Executors
 
 private const val TAG = "WaypadScreenStream"
 private const val CONNECT_TIMEOUT_MS = 5_000
 private const val FIRST_FRAME_TIMEOUT_MS = 130_000L
 private const val FRAME_PROGRESS_TIMEOUT_MS = 12_000L
+
+private val JPEG_DECODE_DISPATCHER = Executors.newFixedThreadPool(1).asCoroutineDispatcher()
 
 data class RemoteScreenFrame(
     val seq: Long,
@@ -42,8 +47,14 @@ class RemoteScreenStreamClient {
         onFrame: suspend (RemoteScreenFrame) -> Unit,
     ) = withContext(Dispatchers.IO) {
         Log.i(TAG, "stream_connect_start host=$host port=$port transport=$transport")
+        val decodeOpts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        var lastSeenSeq = -1L
         Socket().use { socket ->
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            socket.receiveBufferSize = 256 * 1024
+            socket.sendBufferSize = 64 * 1024
             socket.tcpNoDelay = true
             socket.keepAlive = true
             socket.soTimeout = 1_000
@@ -67,6 +78,7 @@ class RemoteScreenStreamClient {
                 Log.i(TAG, "stream_connect_success host=$host port=$port")
 
                 var firstFrame = true
+                var staleSkipCount = 0L
                 while (currentCoroutineContext().isActive) {
                     val timeoutMs = if (firstFrame) FIRST_FRAME_TIMEOUT_MS else FRAME_PROGRESS_TIMEOUT_MS
                     val headerLength = input.readIntCancellable(timeoutMs, "frame header length")
@@ -84,10 +96,24 @@ class RemoteScreenStreamClient {
                     input.readFullyCancellable(payload, timeoutMs, "frame payload")
 
                     val header = JSONObject(String(headerBytes, Charsets.UTF_8))
-                    val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size)
-                        ?: throw RemoteScreenTransportException("Could not decode JPEG frame")
+                    val seq = header.optLong("seq")
+
+                    if (seq < lastSeenSeq) {
+                        staleSkipCount++
+                        Log.v(TAG, "frame_skip_stale seq=$seq last=$lastSeenSeq total_skipped=$staleSkipCount")
+                        continue
+                    }
+                    lastSeenSeq = seq
+
+                    val deferred = CompletableDeferred<Bitmap>()
+                    withContext(JPEG_DECODE_DISPATCHER) {
+                        val bitmap = BitmapFactory.decodeByteArray(payload, 0, payload.size, decodeOpts)
+                            ?: throw RemoteScreenTransportException("Could not decode JPEG frame")
+                        deferred.complete(bitmap)
+                    }
+                    val bitmap = deferred.await()
                     val frame = RemoteScreenFrame(
-                        seq = header.optLong("seq"),
+                        seq = seq,
                         timestampMs = header.optLong("timestamp_ms"),
                         width = header.optInt("width", bitmap.width),
                         height = header.optInt("height", bitmap.height),

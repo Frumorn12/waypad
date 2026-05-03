@@ -93,8 +93,8 @@ data class WaypadUiState(
 class WaypadViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val TAG = "WaypadViewModel"
-        const val INPUT_QUEUE_CAPACITY = 96
-        const val REALTIME_INPUT_BACKLOG_HIGH_WATERMARK = 32
+        const val INPUT_QUEUE_CAPACITY = 48
+        const val REALTIME_INPUT_BACKLOG_HIGH_WATERMARK = 24
         const val INTERACTION_GRACE_MS = 180L
         const val INTERACTION_KEEPALIVE_INITIAL_MS = 2_000L
         const val INTERACTION_KEEPALIVE_INTERVAL_MS = 5_000L
@@ -119,6 +119,9 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private var streamFrameWindowStartedAt = 0L
     private var streamFrameWindowCount = 0
     private var streamFrameWindowBytes = 0L
+    private var streamTotalReceivedFrames = 0L
+    private var streamDeliverWindowStartedAt = 0L
+    private var streamDeliverWindowCount = 0
     private var handledInvitePayload: String? = null
     private var pendingInvite: WaypadInvite? = null
     private var lastControllerCaptureNoticeAt = 0L
@@ -770,6 +773,9 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             streamFrameWindowStartedAt = 0L
             streamFrameWindowCount = 0
             streamFrameWindowBytes = 0L
+            streamTotalReceivedFrames = 0L
+            streamDeliverWindowStartedAt = 0L
+            streamDeliverWindowCount = 0
             Log.i(
                 TAG,
                 "stream_settings_apply profile=${settings.profile} fps=${settings.maxFps} quality=${settings.jpegQuality} max=${settings.maxDimension}",
@@ -960,19 +966,30 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         }
         streamFrameWindowCount += 1
         streamFrameWindowBytes += frame.byteCount
+        streamTotalReceivedFrames += 1
+        if (streamDeliverWindowStartedAt == 0L || now - streamDeliverWindowStartedAt > 2_000L) {
+            streamDeliverWindowStartedAt = now
+            streamDeliverWindowCount = 0
+        }
+        streamDeliverWindowCount += 1
         val elapsed = (now - streamFrameWindowStartedAt).coerceAtLeast(1)
         val fps = streamFrameWindowCount * 1000.0 / elapsed
+        val deliverElapsed = (now - streamDeliverWindowStartedAt).coerceAtLeast(1)
+        val deliveredFps = streamDeliverWindowCount * 1000.0 / deliverElapsed
         val averageKib = (streamFrameWindowBytes / streamFrameWindowCount / 1024L).toInt()
         return ScreenStreamStats(
             estimatedFps = fps,
             averageKib = averageKib,
             lastFrameAgeMs = (now - frame.timestampMs).coerceAtLeast(0L),
+            deliveredFps = deliveredFps,
+            receivedFrames = streamTotalReceivedFrames,
+            targetFps = _state.value.streamSettings.maxFps,
         )
     }
 
     private fun streamStatusFor(frame: RemoteScreenFrame, stats: ScreenStreamStats): String {
         return if (_state.value.streamSettings.showStats) {
-            "Live ${frame.width}x${frame.height} ${stats.estimatedFps.formatFps()} fps ${frame.byteCount / 1024} KiB"
+            "Live ${frame.width}x${frame.height} ${stats.deliveredFps.formatFps()}/${stats.targetFps} fps ${frame.byteCount / 1024} KiB"
         } else {
             "Live ${frame.width}x${frame.height}"
         }

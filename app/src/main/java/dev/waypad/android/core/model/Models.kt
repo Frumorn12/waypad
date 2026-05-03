@@ -99,6 +99,10 @@ data class ScreenStreamStats(
     val estimatedFps: Double = 0.0,
     val averageKib: Int = 0,
     val lastFrameAgeMs: Long = 0,
+    val droppedStaleFrames: Long = 0,
+    val receivedFrames: Long = 0,
+    val deliveredFps: Double = 0.0,
+    val targetFps: Int = 0,
 )
 
 enum class RemoteScreenConnectionState {

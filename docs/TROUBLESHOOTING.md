@@ -235,6 +235,162 @@ adb logcat -d -v time | grep -E 'input_queue_|external_controller_axis|controlle
 Repeated `input_queue_drop_stale_realtime` means the app is protecting host
 latency by dropping old analog states instead of replaying them late.
 
+## Streaming Feels Laggy / Not 60 FPS
+
+The app shows `delivered/target fps` in the stream status overlay when stats are
+enabled in Settings. If the delivered number is far below the target (e.g. 18/60
+fps), check each stage:
+
+### Verify the daemon is receiving the correct settings
+
+```bash
+journalctl --user -u waypad-daemon -f | grep "screen stream started"
+```
+
+Expected: `fps=60 quality=52` (Game Mode) or `fps=60 quality=58` (Ultra Low Latency).
+
+### Check what is actually being produced
+
+```bash
+adb logcat -d -v time | grep -E 'WaypadScreenStream.*frame seq=|WaypadViewModel.*screen_stream'
+```
+
+Healthy output shows `frame seq=N` advancing and `starting screen stream` with
+the correct profile in the same log batch.
+
+### Frame dropping behavior
+
+The daemon drops frames that cannot be sent within a 12 ms deadline to keep
+latency low. If your network is congested or Wi-Fi quality is poor, the
+delivered FPS will drop below the target. This is intentional: the pipeline
+prefers lower framerate over adding buffer delay.
+
+### Android decode bottleneck
+
+JPEG decode uses `BitmapFactory` with `RGB_565` configuration on a dedicated
+thread. If frame delivery stalls, check:
+
+```bash
+adb logcat -d -v time | grep "frame_skip_stale"
+```
+
+Stale frame skips mean the pipeline is producing frames faster than Android can
+decode them. Reduce the capture resolution or switch to a lower quality profile.
+
+### Portal vs Grim capture
+
+Portal (PipeWire/GStreamer) capture is significantly faster than the Grim
+fallback. For gaming, the Portal path is required. Verify:
+
+```bash
+waypad-daemon doctor | grep capture
+journalctl --user -u waypad-daemon -f | grep "stream.*started"
+```
+
+"Portal stream" is good. "grim stream" will never reach 60 fps and is only
+suitable for desktop viewing.
+
+## Controller Input Feels Delayed / Unplayable
+
+### Verify the controller path
+
+Controller forwarding requires:
+1. Controller connected to Android and detected by the app
+2. Game Mode or fullscreen active on the Remote Display tab
+3. Host controller forwarding support (`external_input.controller = true`)
+
+Check Android-side event flow:
+
+```bash
+adb logcat -d -v time | grep -E 'input_queue_drop|input_queue_coalesce|external_controller_axis|external_controller_button'
+```
+
+Healthy: `input_queue_coalesce_controller_axes` with multiple axes per batch
+means the app is combining analog updates before sending them. The controller
+path uses a fire-forget send path that does not wait for daemon responses.
+
+### Burst/backlog behavior
+
+If you see `input_queue_drop_stale_realtime`, the app is protecting latency by
+dropping old analog states. This is correct behavior for gaming. If this fires
+constantly with low controller activity, the control channel may be blocked
+(see "Stream Looks Good But Feels Laggy" below).
+
+### Host-side uinput injection
+
+Controller events use uinput with deferred flush for axis events (flush only
+on button events). This batches multiple axis writes into fewer kernel calls.
+Watch daemon logs:
+
+```bash
+journalctl --user -u waypad-daemon -f | grep "virtual gamepad"
+```
+
+## Stream Looks Good But Feels Laggy (High Motion-To-Photon Delay)
+
+This is the "looks nice but feels terrible" situation. The video appears smooth
+but there is a large gap between what the PC shows and what the phone shows.
+
+### Check frame age
+
+The stats overlay shows last frame age. If this is consistently above 80 ms, the
+pipeline has head-of-line delay:
+
+1. **JPEG encoding time**: Large frames + high quality = high encode time.
+   Lower quality (Game Mode uses 52) or lower resolution.
+2. **Network buffer bloat**: TCP can build large send buffers. The daemon now
+   enforces a 12 ms send deadline per frame.
+3. **Android decode time**: Check for `frame_skip_stale` in logs. If multiple
+   frames are skipped in sequence, the decoder cannot keep up.
+
+### Check the host GStreamer pipeline
+
+```bash
+journalctl --user -u waypad-daemon -f | grep "gstreamer"
+```
+
+Warnings from the `gstreamer` producer indicate pipewire feed issues. The
+pipeline uses `leaky=downstream` queue with 1 buffer max and `drop-only=true`
+videorate for minimal buffering. If GStreamer stderr shows frame drops, the
+compositor capture is the bottleneck.
+
+### Reduce end-to-end path
+
+For minimum motion-to-photon delay:
+- Use Game Mode profile (60 fps, quality 52, max 1280px)
+- Keep the phone close to the Wi-Fi access point
+- Close other apps on the host that use PipeWire or the GPU
+- Use the Portal capture path, not Grim
+
+## Commands Arrive In Bursts After Delay
+
+This is the "buffering then dump" problem. Causes and fixes:
+
+### Android-side queue buildup
+
+If other commands (text, shortcuts) are pending in the same channel as pointer
+moves, the drain loop blocks on those slow operations. Check:
+
+```bash
+adb logcat -d -v time | grep "input_queue_backpressure"
+```
+
+Backpressure on terminal (non-realtime) commands means the channel is full and
+important events are being preserved. This should be rare. If it happens often,
+the daemon may be slow to respond.
+
+### Control channel contention
+
+The single SecureChannel handles all commands. Long-running operations like
+`list_screen_sources` block the channel temporarily. The fire-forget path for
+controller events bypasses response draining to keep latency low.
+
+### Host-side serialization
+
+The daemon processes one command at a time. If `gstreamer stderr` or portal
+calls are slow, the entire command pipeline stalls. The daemon uses async portal
+calls but some operations (text injection) are sequential by design.
+
 ## APK Build Fails
 
 Confirm JDK and Android SDK:
@@ -256,3 +412,20 @@ Debug APK output:
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## Performance Tuning Quick Reference
+
+| Setting | Balanced | Quality | Ultra Low Latency | Game Mode |
+|---------|----------|---------|-------------------|-----------|
+| Max FPS | 30 | 30 | 60 | 60 |
+| JPEG Quality | 70 | 86 | 58 | 52 |
+| Max Dimension | 1600 | 2400 | 1280 | 1280 |
+| Use case | Desktop | Static content | Interactive | Gaming |
+| Latency priority | Balanced | Quality | Low | Lowest |
+| Image quality | Good | Best | Acceptable | Playable |
+
+Game Mode also:
+- Hides UI for immersive fullscreen
+- Enables controller forwarding
+- Prevents accidental Android UI interaction
+- Uses minimum encoding quality for speed

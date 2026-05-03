@@ -149,7 +149,7 @@ class WaypadClient {
     suspend fun externalInput(event: ExternalInputEvent) {
         val body = event.toJson()
         if (event.highFrequency) {
-            commandOneWay("external_input", body)
+            commandFireForget("external_input", body)
         } else {
             command("external_input", body)
         }
@@ -210,6 +210,15 @@ class WaypadClient {
             ch.receiveResponse(oneWayResponseIds.removeFirst())
         }
     } }
+
+    private suspend fun commandFireForget(name: String, body: JSONObject = JSONObject()) = withContext(Dispatchers.IO) {
+        runCatching { transportMutex.withLock {
+            val ch = channel ?: error("Not connected")
+            val id = requestId()
+            val command = JSONObject(body.toString()).put("name", name)
+            ch.send(JSONObject().put("type", "command").put("request_id", id).put("command", command))
+        } }
+    }
 
     private fun SecureChannel.receiveResponse(id: String): JSONObject {
         while (true) {
