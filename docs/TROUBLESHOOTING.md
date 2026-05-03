@@ -235,6 +235,52 @@ adb logcat -d -v time | grep -E 'input_queue_|external_controller_axis|controlle
 Repeated `input_queue_drop_stale_realtime` means the app is protecting host
 latency by dropping old analog states instead of replaying them late.
 
+## Stream Is Very Slow (~10 FPS Average)
+
+If the stream averages only 5-15 FPS despite selecting a 60 FPS or Game Mode
+profile, check the source being used:
+
+### Check stream backend on the daemon
+
+```bash
+journalctl --user -u waypad-daemon -f | grep 'backend='
+```
+
+- `backend=hyprland-grim` → Screenshot-per-frame using `grim` tool. Slow by design.
+  Switch to "Portal picker (60 FPS capable)" in the Android app.
+- `backend=wayland-screencast-portal` → PipeWire + GStreamer pipeline. Fast.
+
+### Grim fallback = ~10 FPS
+
+The grim backend spawns a new `grim` process per frame for full-screen JPEG
+capture. At 1080p, each frame takes 80-200ms. The daemon caps grim sources at
+15 FPS to prevent wasted retries. This backend exists as a fallback for hosts
+without PipeWire capture and is **not suitable for gaming**.
+
+### Fix: select Portal picker
+
+1. On the Remote Display tab, tap "Sources" to list available sources
+2. Select **"Portal picker (60 FPS capable)"**
+3. A ScreenCast approval dialog appears on the Linux host — approve it
+4. The stream now uses the real-time PipeWire pipeline
+
+If Portal picker doesn't appear, install on the Linux host:
+```bash
+sudo pacman -S pipewire wireplumber xdg-desktop-portal \
+  xdg-desktop-portal-hyprland gst-plugin-pipewire gst-plugins-good
+systemctl --user restart pipewire wireplumber \
+  xdg-desktop-portal xdg-desktop-portal-hyprland
+```
+
+### Check delivered vs target FPS
+
+With stats enabled in Settings, the stream overlay shows `delivered/target fps`
+(e.g. `52/60 fps`). If delivered is far below target even with the portal
+path, the bottleneck is:
+1. Network bandwidth (reduce resolution or quality)
+2. Host encode CPU (JPEG at high quality is CPU-intensive)
+3. Compositor capture rate
+
 ## Streaming Feels Laggy / Not 60 FPS
 
 The app shows `delivered/target fps` in the stream status overlay when stats are
