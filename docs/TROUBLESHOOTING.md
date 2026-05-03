@@ -483,3 +483,21 @@ Game Mode also:
 - Enables controller forwarding
 - Prevents accidental Android UI interaction
 - Uses minimum encoding quality for speed
+
+## Stream Gets Stuck On "Connecting" And Portal Dialog Never Appears
+
+If the stream stays on "Connecting stream" forever and no ScreenCast
+approval dialog appears on the Linux desktop, pre-authorize once:
+
+```bash
+# On the Linux host, run this ONCE:
+waypad-daemon authorize-portal
+```
+
+A dialog appears — approve it. After that, restart the daemon:
+```bash
+systemctl --user restart waypad-daemon
+```
+
+Now all future streams will start automatically at 60 FPS without
+any host-side approval.
