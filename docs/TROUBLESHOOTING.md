@@ -501,3 +501,26 @@ systemctl --user restart waypad-daemon
 
 Now all future streams will start automatically at 60 FPS without
 any host-side approval.
+
+## Display Persistence & Auto-Restore
+
+The daemon remembers which screen source you used last and auto-selects it
+on subsequent stream starts:
+
+```bash
+# View saved preference:
+cat ~/.config/waypad-daemon/preferred_source.json
+```
+
+If the saved source disappears (monitor unplugged, permission revoked),
+the daemon falls back to the default source. No terminal commands needed.
+
+### Portal approval story
+
+| Situation | What happens |
+|-----------|-------------|
+| First time opening stream | Portal dialog appears if backend supports it |
+| Stream restart without portal approval | Grim fallback (20-25 fps, 250ms send deadline) |
+| After portal approved once | restore_token auto-approves forever |
+| restore_token expires or is revoked | Auto-fallback to grim; re-run `authorize-portal` to re-approve |
+| Changing FPS/quality | Stream restarts on SAME display, no picker needed |
