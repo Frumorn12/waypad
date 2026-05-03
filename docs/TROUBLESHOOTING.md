@@ -524,3 +524,20 @@ the daemon falls back to the default source. No terminal commands needed.
 | After portal approved once | restore_token auto-approves forever |
 | restore_token expires or is revoked | Auto-fallback to grim; re-run `authorize-portal` to re-approve |
 | Changing FPS/quality | Stream restarts on SAME display, no picker needed |
+
+## Grim FPS Limit (~10 FPS Maximum)
+
+The grim screenshot backend is fundamentally limited to ~9-10 FPS because:
+1. Each frame spawns a new `grim` process (Wayland connection + screenshot + JPEG encode)
+2. Minimum time per cycle on Hyprland: ~100-110ms
+3. No continuous capture protocol — grim is a one-shot tool
+
+**For 30+ FPS, use "Portal picker (60 FPS capable)" source.**
+The portal uses PipeWire continuous capture + GStreamer encode pipeline.
+
+### If portal doesn't work:
+```bash
+# Check PipeWire/GStreamer installation
+gst-inspect-1.0 pipewiresrc jpegenc
+systemctl --user status pipewire wireplumber
+```
