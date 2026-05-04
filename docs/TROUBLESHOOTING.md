@@ -541,3 +541,103 @@ The portal uses PipeWire continuous capture + GStreamer encode pipeline.
 gst-inspect-1.0 pipewiresrc jpegenc
 systemctl --user status pipewire wireplumber
 ```
+
+---
+
+## Settings Persistence
+
+Waypad now uses Android DataStore to persist all stream and input settings. Settings are saved immediately when changed and restored on app launch.
+
+### First-run defaults
+
+On a fresh install, the app defaults to **Game Mode**:
+- Profile: Game
+- Target FPS: 60
+- Max resolution: 1280px
+- JPEG quality: 52
+- Stats overlay: ON
+
+This default was chosen for controller-based play. If you prefer desktop browsing, switch to **Balanced** or **Quality** in Settings.
+
+### What is persisted
+
+- Stream profile, custom FPS, resolution, and JPEG quality
+- Show stats toggle
+- Haptics on/off
+- Game Mode on/off
+
+### What is NOT persisted
+
+- Current screen source selection (the daemon remembers this)
+- Live stream state (must reconnect after app restart)
+- Trusted hosts (stored separately in encrypted prefs)
+
+### Troubleshooting: 60 fps selected but stream not actually 60
+
+1. Check the **stream overlay** or **Diagnostics** screen. It shows:
+   - `Target FPS` — what you selected
+   - `Actual FPS (host)` — what the daemon reported it can deliver
+   - `Delivered FPS` — what the phone is actually receiving
+
+2. If **Actual FPS** is lower than **Target FPS**, the daemon clamped it because the backend cannot go higher:
+   - `hyprland-grim` is capped at 30 FPS (and realistically delivers 7-15 FPS)
+   - `wayland-screencast-portal` and `x11-ffmpeg` support up to 60 FPS
+
+3. To fix: select a different source in the **Stream Setup** card. Look for:
+   - `x11-ffmpeg` (X11 hosts — true 60 FPS)
+   - `wayland-screencast-portal` (Wayland hosts with portal — true 60 FPS)
+
+### Troubleshooting: setting falls back after restart
+
+If a setting reverts after killing and reopening the app:
+
+```bash
+adb logcat -d -v time | grep "settings_loaded"
+```
+
+Expected: `settings_loaded profile=Game fps=60 ...`
+
+If it shows `profile=Balanced fps=30`, DataStore did not write. This can happen if:
+- The app crashed before the async write completed
+- The phone storage is full
+- The APK was reinstalled without preserving data
+
+**Fix**: change the setting again, wait 2 seconds, then force-stop and reopen the app. DataStore writes are asynchronous but typically complete within milliseconds.
+
+### Troubleshooting: stream settings not sticking
+
+Settings only apply when a **new** stream starts. Changing FPS while a stream is live does NOT reconfigure the active pipeline. You must:
+1. Change the setting in **Settings → Stream Performance**
+2. Return to the **Screen** tab
+3. Tap **Stop Stream**, then **Start Stream**
+
+The app will warn you about this in the UI: *"These apply the next time you start a stream."*
+
+### Troubleshooting: poor FPS even with portal selected
+
+If delivered FPS is still low with the portal backend:
+
+1. **Check network**: Move closer to the Wi-Fi access point. The stream is uncompressed JPEG over TCP; poor Wi-Fi causes frame drops.
+2. **Reduce resolution**: In Settings, set Max Resolution to 1280 instead of 2400.
+3. **Reduce quality**: Game Mode (quality 52) is optimized for speed. Quality 86+ is CPU-heavy.
+4. **Check host CPU**: `journalctl --user -u waypad-daemon -f | grep throughput`. If `fps_measured` is low on the host, the encoder or compositor is the bottleneck.
+5. **Check for frame skipping**: `adb logcat -d -v time | grep frame_skip_stale`. If Android is skipping frames, lower resolution/quality.
+
+### Troubleshooting: controller/game mode confusion
+
+- **Controller ready but not forwarding**: The app shows "Controller connected" on the Pad tab. You MUST open **Remote Screen → Fullscreen** or **Game Mode** for controller input to reach the PC. This prevents accidental Android UI navigation.
+- **Game Mode hides controls**: This is intentional. Reveal them by:
+  - Tapping the top handle
+  - Pressing the controller **Mode** button
+  - Pressing **Start + Select** together
+- **Game Mode resets stream settings to Game profile**: This is intentional. Entering Game Mode applies the Game preset (60 FPS, 1280px, quality 52). Exiting Game Mode restores your previous custom settings.
+
+### X11 users: new high-performance backend
+
+If your Linux host runs X11 (not Wayland), the daemon now automatically lists X11 monitors using `ffmpeg x11grab`. This backend delivers true 60 FPS without any portal approval. Look for sources labeled **"X11 – 60 FPS, no approval"** in the app.
+
+To verify X11 capture is available:
+```bash
+waypad-daemon doctor | grep capture
+# Expected: backend includes x11-ffmpeg or shows available X11 monitors
+```

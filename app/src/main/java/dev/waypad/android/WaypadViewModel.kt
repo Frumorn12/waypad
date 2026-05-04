@@ -21,6 +21,7 @@ import dev.waypad.android.core.model.ScreenStreamStats
 import dev.waypad.android.core.model.StreamProfile
 import dev.waypad.android.core.model.StreamSettings
 import dev.waypad.android.core.model.TrustedHost
+import dev.waypad.android.core.model.formatFps
 import dev.waypad.android.core.network.RemoteScreenFrame
 import dev.waypad.android.core.network.RemoteScreenStreamClient
 import dev.waypad.android.core.network.WaypadClient
@@ -28,6 +29,7 @@ import dev.waypad.android.core.network.WaypadDiscovery
 import dev.waypad.android.core.network.WaypadInvite
 import dev.waypad.android.core.screen.RemoteScreenSessionEvent
 import dev.waypad.android.core.screen.RemoteScreenSessionMachine
+import dev.waypad.android.core.storage.SettingsRepository
 import dev.waypad.android.core.storage.TrustedHostStore
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Job
@@ -106,6 +108,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     private val client = WaypadClient()
     private val screenStreamClient = RemoteScreenStreamClient()
     private val store = TrustedHostStore(application)
+    private val settingsRepo = SettingsRepository(application)
     private val inputCommands = Channel<RemoteInputCommand>(capacity = INPUT_QUEUE_CAPACITY)
     private val queuedInputCommands = AtomicInteger(0)
     private var interactionKeepAliveJob: Job? = null
@@ -132,6 +135,22 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         viewModelScope.launch { drainInputCommands() }
+        viewModelScope.launch {
+            settingsRepo.streamSettings.collect { settings ->
+                Log.i(TAG, "settings_loaded profile=${settings.profile} fps=${settings.maxFps} quality=${settings.jpegQuality} dimension=${settings.maxDimension}")
+                _state.update { it.copy(streamSettings = settings) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepo.haptics.collect { haptics ->
+                _state.update { it.copy(haptics = haptics) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepo.gameMode.collect { gameMode ->
+                _state.update { it.copy(remoteScreenGameMode = gameMode) }
+            }
+        }
     }
 
     fun go(screen: Screen) {
@@ -321,17 +340,17 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun toggleHaptics() {
-        _state.update { it.copy(haptics = !it.haptics) }
+        val enabled = !_state.value.haptics
+        _state.update { it.copy(haptics = enabled) }
+        viewModelScope.launch { settingsRepo.saveHaptics(enabled) }
     }
 
     fun setStreamProfile(profile: StreamProfile) {
         val restart = _state.value.screenStreaming
         Log.i(TAG, "stream_settings_profile profile=$profile restart=$restart")
-        _state.update {
-            it.copy(
-                streamSettings = profile.toStreamSettings(showStats = it.streamSettings.showStats),
-            )
-        }
+        val newSettings = profile.toStreamSettings(showStats = _state.value.streamSettings.showStats)
+        _state.update { it.copy(streamSettings = newSettings) }
+        viewModelScope.launch { settingsRepo.saveStreamSettings(newSettings) }
         if (restart) startScreenStream()
     }
 
@@ -339,41 +358,50 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         _state.update {
             it.copy(streamSettings = it.streamSettings.copy(maxFps = fps.coerceIn(5, 60)))
         }
+        viewModelScope.launch { settingsRepo.saveStreamSettings(_state.value.streamSettings) }
     }
 
     fun setStreamJpegQuality(quality: Int) {
         _state.update {
             it.copy(streamSettings = it.streamSettings.copy(jpegQuality = quality.coerceIn(35, 92)))
         }
+        viewModelScope.launch { settingsRepo.saveStreamSettings(_state.value.streamSettings) }
     }
 
     fun setStreamMaxDimension(dimension: Int) {
         _state.update {
             it.copy(streamSettings = it.streamSettings.copy(maxDimension = dimension.coerceIn(720, 3840)))
         }
+        viewModelScope.launch { settingsRepo.saveStreamSettings(_state.value.streamSettings) }
     }
 
     fun toggleStreamStats() {
         _state.update {
             it.copy(streamSettings = it.streamSettings.copy(showStats = !it.streamSettings.showStats))
         }
+        viewModelScope.launch { settingsRepo.saveStreamSettings(_state.value.streamSettings) }
     }
 
     fun setRemoteScreenGameMode(enabled: Boolean) {
         val current = _state.value
         if (current.remoteScreenGameMode == enabled) return
         Log.i(TAG, "remote_screen_game_mode enabled=$enabled")
+        val newSettings = if (enabled) {
+            StreamProfile.Game.toStreamSettings(showStats = current.streamSettings.showStats)
+        } else {
+            current.streamSettings
+        }
         _state.update {
             it.copy(
                 remoteScreenGameMode = enabled,
                 remoteScreenFullscreen = if (enabled) true else it.remoteScreenFullscreen,
                 remoteScreenControlsVisible = !enabled,
-                streamSettings = if (enabled) {
-                    StreamProfile.Game.toStreamSettings(showStats = it.streamSettings.showStats)
-                } else {
-                    it.streamSettings
-                },
+                streamSettings = newSettings,
             )
+        }
+        viewModelScope.launch {
+            settingsRepo.saveGameMode(enabled)
+            settingsRepo.saveStreamSettings(newSettings)
         }
         if (enabled) publishCurrentExternalDevices()
         if (current.screenStreaming) startScreenStream()
@@ -802,14 +830,19 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                         maxHeight = settings.maxHeight,
                     )
                     info = streamInfo
-                    Log.i(TAG, "screen_stream_start attempt=$attempt session=${streamInfo.sessionId} source=${streamInfo.source.id} port=${streamInfo.streamPort}")
+                    Log.i(TAG, "screen_stream_start attempt=$attempt session=${streamInfo.sessionId} source=${streamInfo.source.id} port=${streamInfo.streamPort} actualFps=${streamInfo.actualFps} actualQuality=${streamInfo.actualQuality}")
                     _state.update {
                         it.copy(
                             screenStreamInfo = streamInfo,
                             selectedScreenSourceId = streamInfo.source.id,
                             screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Negotiated),
-                            screenStatus = "Connecting stream...",
+                            screenStatus = "Connecting ${streamInfo.source.backend} stream...",
                             screenError = null,
+                            screenStreamStats = ScreenStreamStats(
+                                targetFps = settings.maxFps,
+                                actualFps = streamInfo.actualFps,
+                                backend = streamInfo.source.backend,
+                            ),
                         )
                     }
                     var sawFrame = false
@@ -977,6 +1010,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         val deliverElapsed = (now - streamDeliverWindowStartedAt).coerceAtLeast(1)
         val deliveredFps = streamDeliverWindowCount * 1000.0 / deliverElapsed
         val averageKib = (streamFrameWindowBytes / streamFrameWindowCount / 1024L).toInt()
+        val currentStats = _state.value.screenStreamStats
         return ScreenStreamStats(
             estimatedFps = fps,
             averageKib = averageKib,
@@ -984,14 +1018,22 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             deliveredFps = deliveredFps,
             receivedFrames = streamTotalReceivedFrames,
             targetFps = _state.value.streamSettings.maxFps,
+            actualFps = currentStats.actualFps,
+            backend = currentStats.backend,
         )
     }
 
     private fun streamStatusFor(frame: RemoteScreenFrame, stats: ScreenStreamStats): String {
+        val backend = stats.backend.takeIf { it.isNotBlank() } ?: "unknown"
         return if (_state.value.streamSettings.showStats) {
-            "Live ${frame.width}x${frame.height} ${stats.deliveredFps.formatFps()}/${stats.targetFps} fps ${frame.byteCount / 1024} KiB"
+            val fpsLabel = if (stats.actualFps > 0 && stats.actualFps != stats.targetFps) {
+                "${stats.deliveredFps.formatFps()}/${stats.actualFps} fps (target ${stats.targetFps})"
+            } else {
+                "${stats.deliveredFps.formatFps()}/${stats.targetFps} fps"
+            }
+            "Live ${frame.width}x${frame.height} | $backend | $fpsLabel | ${frame.byteCount / 1024} KiB"
         } else {
-            "Live ${frame.width}x${frame.height}"
+            "Live ${frame.width}x${frame.height} · $backend"
         }
     }
 
@@ -1326,15 +1368,6 @@ private fun shouldCaptureExternalInput(state: WaypadUiState): Boolean =
     state.connectionState == ConnectionState.Connected &&
         (state.screen == Screen.Remote || state.screen == Screen.RemoteDisplay)
 
-private fun StreamProfile.toStreamSettings(showStats: Boolean): StreamSettings =
-    StreamSettings(
-        profile = this,
-        maxFps = defaultFps,
-        jpegQuality = defaultQuality,
-        maxDimension = defaultMaxDimension,
-        showStats = showStats,
-    )
-
 private fun shouldForwardExternalDeviceConnected(
     state: WaypadUiState,
     device: ExternalInputDeviceSummary,
@@ -1405,12 +1438,6 @@ private fun externalInputSummary(devices: List<ExternalInputDeviceSummary>): Str
     } else {
         "External devices: " + devices.joinToString { "${it.name} (${it.displayClasses})" }
     }
-
-private fun Double.formatFps(): String = if (this >= 10.0) {
-    toInt().toString()
-} else {
-    String.format(java.util.Locale.US, "%.1f", this)
-}
 
 private sealed interface RemoteInputCommand {
     val isRealtime: Boolean

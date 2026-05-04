@@ -54,6 +54,25 @@ The current MVP does not bundle WebRTC. That avoids adding a partial signaling/m
 
 Trusted hosts are serialized as JSON and encrypted before entering `SharedPreferences`. The AES key is generated inside `AndroidKeyStore` with GCM mode and randomized IVs.
 
+Stream settings, haptics, and game mode are persisted via **Preferences DataStore** (`androidx.datastore:datastore-preferences`). DataStore provides asynchronous, type-safe storage with automatic migration from legacy defaults. Settings are loaded on `ViewModel` init and observed as `Flow`s, eliminating startup race conditions between UI state and persisted values. The first-run default is `Game` profile (60 fps, 1280px, quality 52) to prioritize controller playability.
+
+## UI Structure
+
+The app follows a single-activity Compose architecture with these screens:
+
+- **Onboarding** — first-launch discovery prompt
+- **Discovery** — UDP LAN scan, manual IP, QR invite paste/scan
+- **Pairing** — 6-digit code entry with fingerprint display
+- **Pad** — touchpad remote with gesture recognition and external device status
+- **Screen** — remote display with stream setup card, source selector, fullscreen, and Game Mode
+- **Keyboard** — live text input and Wayland-safe shortcuts
+- **Controls** — media, volume, brightness, system actions
+- **Settings** — grouped cards for Stream Performance, Input Feel, and Connection
+- **Trusted Hosts** — encrypted host identity management
+- **Troubleshooting** — live diagnostics including stream FPS, backend, and capability status
+
+The Settings screen uses grouped cards with chips instead of dense button rows. The Screen tab shows a prominent "Stream Setup" card that makes the backend, source, and start/stop actions obvious. Game Mode is a first-class toggle with clear controller-forwarding instructions.
+
 ## Wayland Reality
 
 The Android app does not pretend input is always available. It displays the daemon capability model and exposes "Approve portal" so the Linux user can grant RemoteDesktop portal permission locally. If Hyprland or the portal stack cannot provide RemoteDesktop, the app remains connected but input commands show the daemon's unsupported reason.

@@ -68,6 +68,8 @@ data class ScreenStreamInfo(
     val codec: String,
     val transport: String,
     val source: ScreenSource,
+    val actualFps: Int = 0,
+    val actualQuality: Int = 0,
 )
 
 enum class StreamProfile(
@@ -79,7 +81,16 @@ enum class StreamProfile(
     Balanced("Balanced", 30, 70, 1600),
     Quality("Quality", 30, 86, 2400),
     LowLatency("Ultra low latency", 60, 58, 1280),
-    Game("Game Mode", 60, 52, 1280),
+    Game("Game Mode", 60, 52, 1280);
+
+    fun toStreamSettings(showStats: Boolean): StreamSettings =
+        StreamSettings(
+            profile = this,
+            maxFps = defaultFps,
+            jpegQuality = defaultQuality,
+            maxDimension = defaultMaxDimension,
+            showStats = showStats,
+        )
 }
 
 data class StreamSettings(
@@ -103,6 +114,8 @@ data class ScreenStreamStats(
     val receivedFrames: Long = 0,
     val deliveredFps: Double = 0.0,
     val targetFps: Int = 0,
+    val actualFps: Int = 0,
+    val backend: String = "unknown",
 )
 
 enum class RemoteScreenConnectionState {
@@ -128,6 +141,12 @@ enum class PointerButton(val wireName: String) {
     Left("left"),
     Middle("middle"),
     Right("right"),
+}
+
+fun Double.formatFps(): String = if (this >= 10.0) {
+    "${this.toInt()}"
+} else {
+    "%.1f".format(this)
 }
 
 enum class ButtonState(val wireName: String) {

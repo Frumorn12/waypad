@@ -341,4 +341,6 @@ private fun JSONObject.toScreenStreamInfo(): ScreenStreamInfo = ScreenStreamInfo
     codec = optString("codec", "jpeg"),
     transport = optString("transport", "waypad-frame-stream-v1"),
     source = getJSONObject("source").toScreenSource(),
+    actualFps = optInt("actual_fps", 0),
+    actualQuality = optInt("actual_quality", 0),
 )
