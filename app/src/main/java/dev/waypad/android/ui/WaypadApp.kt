@@ -136,6 +136,12 @@ fun WaypadApp(viewModel: WaypadViewModel) {
     BackHandler(remoteFullscreen) {
         viewModel.setRemoteScreenFullscreen(false)
     }
+    BackHandler(
+        !remoteFullscreen &&
+            (state.screen == Screen.Remote || state.screen == Screen.RemoteDisplay || state.screen == Screen.Keyboard || state.screen == Screen.Controls || state.screen == Screen.Troubleshooting || state.screen == Screen.Settings)
+    ) {
+        viewModel.go(Screen.Discovery)
+    }
     WaypadTheme {
         Box(
             Modifier
