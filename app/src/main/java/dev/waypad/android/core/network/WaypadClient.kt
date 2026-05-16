@@ -103,7 +103,7 @@ class WaypadClient {
     }
 
     suspend fun pointerButton(button: PointerButton, state: ButtonState) {
-        command(
+        commandOneWay(
             "pointer_button",
             JSONObject().put("button", button.wireName).put("state", state.wireName),
         )
