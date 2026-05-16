@@ -4,6 +4,7 @@ import android.app.Application
 import android.os.Build
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dev.waypad.android.core.externalinput.ExternalInputDeviceClass
 import dev.waypad.android.core.externalinput.ExternalInputDeviceSummary
@@ -92,7 +93,10 @@ data class WaypadUiState(
     val screenError: String? = null,
 )
 
-class WaypadViewModel(application: Application) : AndroidViewModel(application) {
+class WaypadViewModel(
+    application: Application,
+    private val savedStateHandle: SavedStateHandle,
+) : AndroidViewModel(application) {
     private companion object {
         const val TAG = "WaypadViewModel"
         const val INPUT_QUEUE_CAPACITY = 48
@@ -151,6 +155,59 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 _state.update { it.copy(remoteScreenGameMode = gameMode) }
             }
         }
+        restoreSessionState()
+    }
+
+    private fun restoreSessionState() {
+        val savedHostId = savedStateHandle.get<String>("connectedHostId")
+        val savedScreen = savedStateHandle.get<String>("screen")
+        if (savedHostId != null) {
+            val trustedHosts = store.load()
+            val host = trustedHosts.find { it.id == savedHostId }
+            if (host != null) {
+                Log.i(TAG, "session_restore found saved host=${host.hostName} screen=$savedScreen")
+                _state.update {
+                    it.copy(
+                        connectedHost = host,
+                        connectionState = ConnectionState.Connecting,
+                        screen = savedScreen?.let { s -> runCatching { Screen.valueOf(s) }.getOrNull() } ?: Screen.Remote,
+                        status = "Reconnecting to ${host.hostName}...",
+                    )
+                }
+                viewModelScope.launch {
+                    runCatching { client.connect(host) }
+                        .onSuccess { capabilities ->
+                            Log.i(TAG, "session_restore reconnected host=${host.hostName}")
+                            _state.update {
+                                it.copy(
+                                    capabilities = capabilities,
+                                    connectionState = ConnectionState.Connected,
+                                    status = "Reconnected to ${host.hostName}",
+                                    error = null,
+                                )
+                            }
+                            publishCurrentExternalDevices()
+                        }
+                        .onFailure { throwable ->
+                            Log.w(TAG, "session_restore reconnect failed", throwable)
+                            _state.update {
+                                it.copy(
+                                    connectionState = ConnectionState.Disconnected,
+                                    connectedHost = null,
+                                    screen = Screen.Discovery,
+                                    status = "Reconnect failed. Tap to retry.",
+                                    error = throwable.message,
+                                )
+                            }
+                            savedStateHandle["connectedHostId"] = null
+                            savedStateHandle["screen"] = null
+                        }
+                }
+            } else {
+                Log.w(TAG, "session_restore saved host not found in store")
+                savedStateHandle["connectedHostId"] = null
+            }
+        }
     }
 
     fun go(screen: Screen) {
@@ -158,6 +215,11 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         val previous = _state.value.screen
         if (previous == Screen.RemoteDisplay && screen != Screen.RemoteDisplay) {
             stopScreenStream()
+        }
+        if (screen == Screen.Remote || screen == Screen.RemoteDisplay) {
+            savedStateHandle["screen"] = screen.name
+        } else if (screen == Screen.Discovery || screen == Screen.Onboarding) {
+            savedStateHandle["screen"] = screen.name
         }
         _state.update {
             it.copy(
@@ -488,6 +550,8 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                 Log.i(TAG, "connection_state=connected paired_host=${trusted.hostName} input_backend=${capabilities.inputBackend}")
                 pendingInvite = null
                 store.upsert(trusted)
+                savedStateHandle["connectedHostId"] = trusted.id
+                savedStateHandle["screen"] = Screen.Remote.name
                 _state.update {
                     it.copy(
                         trustedHosts = store.load(),
@@ -568,6 +632,8 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                     Log.i(TAG, "connection_state=connected host=${host.hostName} input_backend=${capabilities.inputBackend}")
                     val updated = host.copy(lastConnectedAt = System.currentTimeMillis())
                     store.upsert(updated)
+                    savedStateHandle["connectedHostId"] = updated.id
+                    savedStateHandle["screen"] = Screen.Remote.name
                     _state.update {
                         it.copy(
                             trustedHosts = store.load(),
@@ -590,6 +656,8 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         interactionKeepAliveJob?.cancel()
         interactionEndJob?.cancel()
         activeInteractionSessionId = 0L
+        savedStateHandle["connectedHostId"] = null
+        savedStateHandle["screen"] = null
         _state.update {
             it.copy(
                 connectionState = ConnectionState.Disconnected,
@@ -882,6 +950,15 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
                     val message = throwable.message ?: throwable::class.java.simpleName
                     val failedState = transitionScreenSession(RemoteScreenSessionEvent.Fail)
                     val willRetry = attempt < SCREEN_STREAM_MAX_RETRIES && screenStreamDesired
+                    if (willRetry) {
+                        viewModelScope.launch {
+                            if (reconnectCurrentHost()) {
+                                Log.i(TAG, "screen_stream_reconnect_succeeded before retry")
+                            } else {
+                                Log.w(TAG, "screen_stream_reconnect_failed before retry")
+                            }
+                        }
+                    }
                     _state.update {
                         it.copy(
                             screenStreaming = willRetry,
@@ -1077,6 +1154,7 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
         return runCatching {
             val capabilities = client.connect(host)
             Log.i(TAG, "connection_state=reconnected host=${host.hostName} input_backend=${capabilities.inputBackend}")
+            savedStateHandle["connectedHostId"] = host.id
             _state.update {
                 it.copy(
                     capabilities = capabilities,
