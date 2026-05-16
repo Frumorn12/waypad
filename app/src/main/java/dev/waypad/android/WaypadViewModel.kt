@@ -1160,7 +1160,10 @@ class WaypadViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                 inputCommands.receiveCatching().getOrNull()?.also { markInputDequeued() } ?: break
             }
-            if (_state.value.connectedHost == null || _state.value.connectionState == ConnectionState.Disconnected) {
+            if (_state.value.connectedHost == null ||
+                _state.value.connectionState == ConnectionState.Disconnected ||
+                _state.value.connectionState == ConnectionState.Error
+            ) {
                 Log.d(TAG, "input_queue_skip_disconnected command=$command")
                 continue
             }

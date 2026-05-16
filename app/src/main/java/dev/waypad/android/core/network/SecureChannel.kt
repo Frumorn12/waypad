@@ -51,6 +51,7 @@ class SecureChannel private constructor(
             socket.tcpNoDelay = true
             socket.keepAlive = true
             socket.soTimeout = 130_000
+            socket.setSoLinger(true, 0)
             val reader = socket.getInputStream().bufferedReader()
             val writer = socket.getOutputStream().bufferedWriter()
 
