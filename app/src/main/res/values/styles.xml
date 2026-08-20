@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Waypad" parent="android:style/Theme.Material.NoActionBar">
-        <item name="android:windowLightStatusBar">false</item>
-        <item name="android:navigationBarColor">#070807</item>
-        <item name="android:statusBarColor">#070807</item>
-        <item name="android:fontFamily">sans</item>
+    <!--
+        Launch theme only: the whole UI is drawn by Compose with MaterialExpressiveTheme.
+        System bars are transparent because MainActivity calls enableEdgeToEdge(); the window
+        background follows the platform (and, on Android 12+, the dynamic wallpaper palette)
+        instead of being pinned to the old brand black.
+    -->
+    <style name="Theme.Waypad" parent="android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">?android:attr/colorBackground</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>

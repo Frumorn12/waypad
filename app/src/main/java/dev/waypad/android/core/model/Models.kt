@@ -116,7 +116,12 @@ data class ScreenStreamStats(
     val targetFps: Int = 0,
     val actualFps: Int = 0,
     val backend: String = "unknown",
-)
+    val bytesPerSecond: Long = 0,
+    val codec: String = "",
+) {
+    val kilobitsPerSecond: Int
+        get() = ((bytesPerSecond * 8L) / 1000L).toInt()
+}
 
 enum class RemoteScreenConnectionState {
     Idle,

@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.QrCodeScanner
@@ -44,14 +43,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import dev.waypad.android.ui.components.OVERLAY_ALPHA
+import dev.waypad.android.ui.theme.WaypadOnVideoLetterbox
+import dev.waypad.android.ui.theme.WaypadOnVideoLetterboxMuted
+import dev.waypad.android.ui.theme.WaypadTheme
+import dev.waypad.android.ui.theme.WaypadVideoLetterbox
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -98,7 +99,7 @@ fun WaypadQrScannerOverlay(
     Box(
         modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(WaypadVideoLetterbox),
     ) {
         if (hasPermission) {
             CameraQrPreview(
@@ -125,48 +126,58 @@ fun WaypadQrScannerOverlay(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(12.dp)
+                .padding(WaypadTheme.spacing.xl)
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Surface(
-                color = Graphite.copy(alpha = 0.78f),
-                contentColor = Mist,
-                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = OVERLAY_ALPHA),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = MaterialTheme.shapes.small,
                 modifier = Modifier.weight(1f),
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    modifier = Modifier.padding(
+                        horizontal = WaypadTheme.spacing.xl,
+                        vertical = WaypadTheme.spacing.lg,
+                    ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Rounded.QrCodeScanner, contentDescription = null, tint = Acid)
-                    Spacer(Modifier.height(1.dp))
+                    Icon(
+                        Icons.Rounded.QrCodeScanner,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                     Text(
                         "Scan Waypad invite",
-                        modifier = Modifier.padding(start = 10.dp),
+                        modifier = Modifier.padding(start = WaypadTheme.spacing.lg),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleSmall,
                     )
                 }
             }
             IconButton(onClick = onDismiss) {
-                Icon(Icons.Rounded.Close, contentDescription = "Close scanner", tint = Mist)
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "Close scanner",
+                    tint = WaypadOnVideoLetterbox,
+                )
             }
         }
 
         error?.let { message ->
             Surface(
-                color = Color(0xFF371A1A),
-                contentColor = Color(0xFFFFB4B4),
-                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                shape = MaterialTheme.shapes.medium,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(18.dp),
+                    .padding(WaypadTheme.spacing.gutter),
             ) {
                 Text(
                     message,
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(WaypadTheme.spacing.xxl),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -179,19 +190,27 @@ private fun PermissionBody(error: String?, onRetry: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(WaypadTheme.spacing.hero),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(Icons.Rounded.QrCodeScanner, contentDescription = null, tint = Acid)
-        Spacer(Modifier.height(14.dp))
-        Text("Camera access is required for QR invites", color = Mist, fontWeight = FontWeight.Bold)
+        Icon(
+            Icons.Rounded.QrCodeScanner,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.height(WaypadTheme.spacing.xxl))
+        Text(
+            "Camera access is required for QR invites",
+            color = WaypadOnVideoLetterbox,
+            style = MaterialTheme.typography.titleMedium,
+        )
         Text(
             error ?: "Waypad uses the camera only to decode the terminal invite QR.",
-            color = Muted,
+            color = WaypadOnVideoLetterboxMuted,
             style = MaterialTheme.typography.bodySmall,
         )
-        Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(WaypadTheme.spacing.gutter))
         Button(onClick = onRetry) {
             Text("Allow camera")
         }

@@ -23,8 +23,7 @@ import dev.waypad.android.core.model.StreamProfile
 import dev.waypad.android.core.model.StreamSettings
 import dev.waypad.android.core.model.TrustedHost
 import dev.waypad.android.core.model.formatFps
-import dev.waypad.android.core.network.RemoteScreenFrame
-import dev.waypad.android.core.network.RemoteScreenStreamClient
+import dev.waypad.android.core.video.RemoteScreenVideoSession
 import dev.waypad.android.core.network.WaypadClient
 import dev.waypad.android.core.network.WaypadDiscovery
 import dev.waypad.android.core.network.WaypadInvite
@@ -81,7 +80,13 @@ data class WaypadUiState(
     val screenSources: List<ScreenSource> = emptyList(),
     val selectedScreenSourceId: String? = null,
     val screenStreamInfo: ScreenStreamInfo? = null,
-    val screenFrame: RemoteScreenFrame? = null,
+    /**
+     * Source resolution of the stream. With hardware decoding no frame object reaches the UI, but
+     * the gesture mapping still needs the desktop size to convert touches, so it is published
+     * explicitly instead of being read off a decoded bitmap.
+     */
+    val videoWidth: Int? = null,
+    val videoHeight: Int? = null,
     val screenStreaming: Boolean = false,
     val screenConnectionState: RemoteScreenConnectionState = RemoteScreenConnectionState.Idle,
     val remoteScreenFullscreen: Boolean = false,
@@ -110,7 +115,8 @@ class WaypadViewModel(
 
     private val discovery = WaypadDiscovery(application)
     private val client = WaypadClient()
-    private val screenStreamClient = RemoteScreenStreamClient()
+    /** Owns the MediaCodec decoder and the render surface; the shell reads `renderer` from it. */
+    val videoSession = RemoteScreenVideoSession()
     private val store = TrustedHostStore(application)
     private val settingsRepo = SettingsRepository(application)
     private val inputCommands = Channel<RemoteInputCommand>(capacity = INPUT_QUEUE_CAPACITY)
@@ -123,12 +129,6 @@ class WaypadViewModel(
     private var activeInteractionSessionId = 0L
     private var nextInteractionSessionId = 0L
     private var lastExternalUnsupportedNoticeAt = 0L
-    private var streamFrameWindowStartedAt = 0L
-    private var streamFrameWindowCount = 0
-    private var streamFrameWindowBytes = 0L
-    private var streamTotalReceivedFrames = 0L
-    private var streamDeliverWindowStartedAt = 0L
-    private var streamDeliverWindowCount = 0
     private var handledInvitePayload: String? = null
     private var pendingInvite: WaypadInvite? = null
     private var lastControllerCaptureNoticeAt = 0L
@@ -138,6 +138,7 @@ class WaypadViewModel(
     val state: StateFlow<WaypadUiState> = _state
 
     init {
+        observeVideoSession()
         viewModelScope.launch { drainInputCommands() }
         viewModelScope.launch {
             settingsRepo.streamSettings.collect { settings ->
@@ -672,7 +673,8 @@ class WaypadViewModel(
                 screenSources = emptyList(),
                 selectedScreenSourceId = null,
                 screenStreamInfo = null,
-                screenFrame = null,
+                videoWidth = null,
+                videoHeight = null,
                 screenStreaming = false,
                 screenConnectionState = RemoteScreenConnectionState.Idle,
                 remoteScreenFullscreen = false,
@@ -857,7 +859,8 @@ class WaypadViewModel(
             _state.update {
                 it.copy(
                     screenStreaming = true,
-                    screenFrame = null,
+                    videoWidth = null,
+                videoHeight = null,
                     screenStreamStats = ScreenStreamStats(),
                     screenStatus = "Starting screen stream...",
                     screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.Start),
@@ -866,12 +869,7 @@ class WaypadViewModel(
             }
             val selected = _state.value.selectedScreenSourceId
             val settings = _state.value.streamSettings
-            streamFrameWindowStartedAt = 0L
-            streamFrameWindowCount = 0
-            streamFrameWindowBytes = 0L
-            streamTotalReceivedFrames = 0L
-            streamDeliverWindowStartedAt = 0L
-            streamDeliverWindowCount = 0
+
             Log.i(
                 TAG,
                 "stream_settings_apply profile=${settings.profile} fps=${settings.maxFps} quality=${settings.jpegQuality} max=${settings.maxDimension}",
@@ -913,29 +911,19 @@ class WaypadViewModel(
                             ),
                         )
                     }
-                    var sawFrame = false
-                    screenStreamClient.collect(
+                    videoSession.updateSessionInfo(
+                        targetFps = settings.maxFps,
+                        actualFps = streamInfo.actualFps,
+                        backend = streamInfo.source.backend,
+                    )
+                    // Suspends until the stream ends or throws; frames go straight from the socket
+                    // to MediaCodec and never pass through this state holder.
+                    videoSession.collect(
                         host = host.address,
                         port = streamInfo.streamPort,
                         token = streamInfo.token,
                         transport = streamInfo.transport,
-                    ) { frame ->
-                        if (!sawFrame) {
-                            sawFrame = true
-                            transitionScreenSession(RemoteScreenSessionEvent.FirstFrame)
-                        }
-                        _state.update {
-                            val stats = updateStreamStats(frame)
-                            it.copy(
-                                screenFrame = frame,
-                                screenStreaming = true,
-                                screenConnectionState = RemoteScreenConnectionState.Streaming,
-                                screenStreamStats = stats,
-                                screenStatus = streamStatusFor(frame, stats),
-                                screenError = null,
-                            )
-                        }
-                    }
+                    )
                 }
                 info?.sessionId?.let { sessionId ->
                     stopScreenStreamOnHost(sessionId, "cleanup")
@@ -1067,50 +1055,73 @@ class WaypadViewModel(
         pointerButton(button, ButtonState.Released)
     }
 
-    private fun updateStreamStats(frame: RemoteScreenFrame): ScreenStreamStats {
-        val now = System.currentTimeMillis()
-        if (streamFrameWindowStartedAt == 0L || now - streamFrameWindowStartedAt > 2_000L) {
-            streamFrameWindowStartedAt = now
-            streamFrameWindowCount = 0
-            streamFrameWindowBytes = 0L
+    /**
+     * Mirrors the decoder session into UI state.
+     *
+     * Statistics and resolution are produced by the video pipeline itself, so the ViewModel only
+     * republishes them. The first decoded frame is what moves the session out of `Negotiating`.
+     */
+    private fun observeVideoSession() {
+        videoSession.onFirstFrame = {
+            _state.update {
+                it.copy(
+                    screenStreaming = true,
+                    screenConnectionState = transitionScreenSession(RemoteScreenSessionEvent.FirstFrame),
+                    screenError = null,
+                )
+            }
         }
-        streamFrameWindowCount += 1
-        streamFrameWindowBytes += frame.byteCount
-        streamTotalReceivedFrames += 1
-        if (streamDeliverWindowStartedAt == 0L || now - streamDeliverWindowStartedAt > 2_000L) {
-            streamDeliverWindowStartedAt = now
-            streamDeliverWindowCount = 0
+        viewModelScope.launch {
+            videoSession.stats.collect { stats ->
+                _state.update { current ->
+                    current.copy(
+                        screenStreamStats = stats,
+                        screenStatus = if (current.screenStreaming) {
+                            streamStatusFor(current.videoWidth, current.videoHeight, stats)
+                        } else {
+                            current.screenStatus
+                        },
+                    )
+                }
+            }
         }
-        streamDeliverWindowCount += 1
-        val elapsed = (now - streamFrameWindowStartedAt).coerceAtLeast(1)
-        val fps = streamFrameWindowCount * 1000.0 / elapsed
-        val deliverElapsed = (now - streamDeliverWindowStartedAt).coerceAtLeast(1)
-        val deliveredFps = streamDeliverWindowCount * 1000.0 / deliverElapsed
-        val averageKib = (streamFrameWindowBytes / streamFrameWindowCount / 1024L).toInt()
-        val currentStats = _state.value.screenStreamStats
-        return ScreenStreamStats(
-            estimatedFps = fps,
-            averageKib = averageKib,
-            lastFrameAgeMs = (now - frame.timestampMs).coerceAtLeast(0L),
-            deliveredFps = deliveredFps,
-            receivedFrames = streamTotalReceivedFrames,
-            targetFps = _state.value.streamSettings.maxFps,
-            actualFps = currentStats.actualFps,
-            backend = currentStats.backend,
-        )
+        viewModelScope.launch {
+            videoSession.videoSize.collect { size ->
+                val width = size.width.takeIf { it > 0 }
+                val height = size.height.takeIf { it > 0 }
+                _state.update { it.copy(videoWidth = width, videoHeight = height) }
+            }
+        }
+        viewModelScope.launch {
+            videoSession.renderError.collect { error ->
+                if (error != null) {
+                    Log.w(TAG, "screen_stream_render_error message=$error")
+                    _state.update { it.copy(screenError = error) }
+                }
+            }
+        }
     }
 
-    private fun streamStatusFor(frame: RemoteScreenFrame, stats: ScreenStreamStats): String {
+    private fun streamStatusFor(width: Int?, height: Int?, stats: ScreenStreamStats): String {
         val backend = stats.backend.takeIf { it.isNotBlank() } ?: "unknown"
+        val resolution = if (width != null && height != null) "${width}x$height" else "connecting"
+        val codec = stats.codec.takeIf { it.isNotBlank() }
         return if (_state.value.streamSettings.showStats) {
             val fpsLabel = if (stats.actualFps > 0 && stats.actualFps != stats.targetFps) {
                 "${stats.deliveredFps.formatFps()}/${stats.actualFps} fps (target ${stats.targetFps})"
             } else {
                 "${stats.deliveredFps.formatFps()}/${stats.targetFps} fps"
             }
-            "Live ${frame.width}x${frame.height} | $backend | $fpsLabel | ${frame.byteCount / 1024} KiB"
+            val parts = listOfNotNull(
+                "Live $resolution",
+                codec,
+                backend,
+                fpsLabel,
+                "${stats.kilobitsPerSecond} kbps",
+            )
+            parts.joinToString(" | ")
         } else {
-            "Live ${frame.width}x${frame.height} · $backend"
+            listOfNotNull("Live $resolution", codec, backend).joinToString(" · ")
         }
     }
 
@@ -1440,6 +1451,7 @@ class WaypadViewModel(
         interactionKeepAliveJob?.cancel()
         interactionEndJob?.cancel()
         screenStreamJob?.cancel()
+        videoSession.release()
         client.close()
         super.onCleared()
     }
