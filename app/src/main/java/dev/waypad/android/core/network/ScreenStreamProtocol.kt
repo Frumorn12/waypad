@@ -45,6 +45,10 @@ object ScreenStreamProtocol {
             timestampMs = fields.longValue("timestamp_ms", 0L),
             width = fields.intValue("width", 0),
             height = fields.intValue("height", 0),
+            // Daemons before the geometry split only sent the frame size, which for
+            // them was already the desktop size.
+            sourceWidth = fields.intValue("source_width", fields.intValue("width", 0)),
+            sourceHeight = fields.intValue("source_height", fields.intValue("height", 0)),
             codec = fields.stringValue("codec", defaultCodec).lowercase(),
             keyFrame = fields.booleanValue("key_frame", false),
             config = fields.booleanValue("config", false),
@@ -86,6 +90,13 @@ data class StreamFrameHeader(
     val timestampMs: Long,
     val width: Int,
     val height: Int,
+    /**
+     * Size of the desktop the frame was captured from, which differs from [width]/[height]
+     * whenever the client asked for a smaller stream. Touches are mapped through this, never
+     * through the encoded size, or the pointer lands in a corner of the screen.
+     */
+    val sourceWidth: Int,
+    val sourceHeight: Int,
     val codec: String,
     val keyFrame: Boolean,
     val config: Boolean,

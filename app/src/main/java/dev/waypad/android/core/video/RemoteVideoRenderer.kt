@@ -43,9 +43,16 @@ class RemoteVideoRenderer(
     private val h264 = H264SurfaceDecoder(backendListener)
     private val jpeg = JpegSurfaceRenderer(backendListener)
     private val _videoSize = MutableStateFlow(VideoSize.Unknown)
+    private val _sourceSize = MutableStateFlow(VideoSize.Unknown)
 
     /** Size of the picture currently being decoded, for aspect-ratio aware layout. */
     val videoSize: StateFlow<VideoSize> = _videoSize.asStateFlow()
+
+    /**
+     * Size of the remote desktop, which the stream may be downscaled from. This is what touch
+     * coordinates have to be mapped against; [videoSize] describes the pixels on the wire.
+     */
+    val sourceSize: StateFlow<VideoSize> = _sourceSize.asStateFlow()
 
     /** Convenience hook for views that cannot collect a flow. */
     var onVideoSize: ((VideoSize) -> Unit)? = null
@@ -82,12 +89,17 @@ class RemoteVideoRenderer(
         }
         Log.i(TAG, "stream_started version=${version.magic} codec=${version.defaultCodec}")
         _videoSize.value = VideoSize.Unknown
+        _sourceSize.value = VideoSize.Unknown
         if (useJpeg) jpeg.reset() else h264.reset()
         handOverSurface(current, useJpeg)
     }
 
     override fun onFrame(frame: EncodedVideoFrame) {
         if (released) return
+        val source = VideoSize(frame.header.sourceWidth, frame.header.sourceHeight)
+        if (source.isValid && _sourceSize.value != source) {
+            _sourceSize.value = source
+        }
         // Route on the envelope itself: a daemon may still emit JPEG on a v2 socket.
         when {
             frame.header.isH264 -> h264.submit(frame)

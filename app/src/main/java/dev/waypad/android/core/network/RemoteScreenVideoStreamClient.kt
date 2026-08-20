@@ -74,7 +74,7 @@ class RemoteScreenVideoStreamClient(
                 }
 
                 val reader = StreamEnvelopeReader(socket.getInputStream())
-                val magic = reader.readHandshakeLine()
+                val magic = reader.readHandshakeLine(FIRST_FRAME_TIMEOUT_MS, onIdle)
                 val version = StreamProtocolVersion.fromMagic(magic)
                     ?: throw RemoteScreenTransportException("Unexpected screen stream header: $magic")
                 Log.i(TAG, "stream_connect_success host=$host port=$port protocol=${version.magic}")

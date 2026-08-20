@@ -14,6 +14,8 @@ internal fun frameHeader(
     config: Boolean = false,
     width: Int = 1920,
     height: Int = 1080,
+    sourceWidth: Int = width,
+    sourceHeight: Int = height,
     codec: String = ScreenStreamProtocol.CODEC_H264,
     timestampMs: Long = seq * 33,
 ) = StreamFrameHeader(
@@ -21,6 +23,8 @@ internal fun frameHeader(
     timestampMs = timestampMs,
     width = width,
     height = height,
+    sourceWidth = sourceWidth,
+    sourceHeight = sourceHeight,
     codec = codec,
     keyFrame = keyFrame,
     config = config,

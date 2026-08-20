@@ -122,4 +122,22 @@ class ScreenStreamProtocolTest {
             // expected
         }
     }
+
+    @Test
+    fun `keeps the desktop size separate from the encoded size`() {
+        val header = ScreenStreamProtocol.parseHeader(
+            """{"seq":4,"width":1600,"height":900,"source_width":1920,"source_height":1080,"codec":"h264"}""",
+        )
+        assertEquals(1600, header.width)
+        assertEquals(900, header.height)
+        assertEquals(1920, header.sourceWidth)
+        assertEquals(1080, header.sourceHeight)
+    }
+
+    @Test
+    fun `falls back to the frame size when the daemon predates the geometry split`() {
+        val header = ScreenStreamProtocol.parseHeader("""{"seq":1,"width":1280,"height":720}""")
+        assertEquals(1280, header.sourceWidth)
+        assertEquals(720, header.sourceHeight)
+    }
 }

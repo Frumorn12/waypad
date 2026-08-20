@@ -1086,7 +1086,9 @@ class WaypadViewModel(
             }
         }
         viewModelScope.launch {
-            videoSession.videoSize.collect { size ->
+            // Deliberately the source size, not the encoded size: the stream is usually
+            // downscaled, and absolute pointer commands are in desktop pixels.
+            videoSession.sourceSize.collect { size ->
                 val width = size.width.takeIf { it > 0 }
                 val height = size.height.takeIf { it > 0 }
                 _state.update { it.copy(videoWidth = width, videoHeight = height) }

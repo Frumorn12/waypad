@@ -65,6 +65,9 @@ class RemoteScreenVideoSession {
     /** Decoded picture size, for aspect-ratio aware layout outside [WaypadVideoView]. */
     val videoSize: StateFlow<VideoSize> get() = renderer.videoSize
 
+    /** Remote desktop size, which touch mapping needs; see [RemoteVideoRenderer.sourceSize]. */
+    val sourceSize: StateFlow<VideoSize> get() = renderer.sourceSize
+
     /** Fired once per stream, the first time a frame is received. */
     var onFirstFrame: (() -> Unit)? = null
 

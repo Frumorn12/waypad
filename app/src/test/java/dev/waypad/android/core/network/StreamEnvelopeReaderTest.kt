@@ -19,7 +19,7 @@ class StreamEnvelopeReaderTest {
         }
         val reader = StreamEnvelopeReader(ByteArrayInputStream(stream.toByteArray()))
 
-        assertEquals("WAYPAD_STREAM_V2", reader.readHandshakeLine())
+        assertEquals("WAYPAD_STREAM_V2", reader.readHandshakeLine(1_000L))
         val envelope = reader.readEnvelope(1_000L)
         assertEquals(HEADER, String(envelope.headerBytes))
         assertArrayEquals(byteArrayOf(1, 2, 3), envelope.payload)
@@ -174,4 +174,39 @@ class StreamEnvelopeReaderTest {
             write(payload)
         }
     }
+    @Test
+    fun waitsThroughPollTimeoutsWhileTheDaemonBringsTheEncoderUp() {
+        // The daemon only sends the handshake once it knows which codec it can deliver, and
+        // portal approval plus pipeline startup sit in between. Poll timeouts here are normal.
+        val payload = "WAYPAD_STREAM_V2\n".toByteArray()
+        val stream = object : InputStream() {
+            private var stalls = 5
+            private var index = 0
+            override fun read(): Int {
+                if (stalls > 0) {
+                    stalls--
+                    throw SocketTimeoutException("Read timed out")
+                }
+                return if (index < payload.size) payload[index++].toInt() else -1
+            }
+        }
+        var clock = 0L
+        val reader = StreamEnvelopeReader(stream, nowMs = { clock += 100L; clock })
+
+        assertEquals("WAYPAD_STREAM_V2", reader.readHandshakeLine(30_000L))
+    }
+
+    @Test
+    fun givesUpOnTheHandshakeOnlyAfterTheDeadline() {
+        val stream = object : InputStream() {
+            override fun read(): Int = throw SocketTimeoutException("Read timed out")
+        }
+        var clock = 0L
+        val reader = StreamEnvelopeReader(stream, nowMs = { clock += 1_000L; clock })
+
+        val error = runCatching { reader.readHandshakeLine(5_000L) }.exceptionOrNull()
+        assertTrue(error is RemoteScreenTransportException)
+        assertTrue(error!!.message!!.contains("handshake"))
+    }
+
 }

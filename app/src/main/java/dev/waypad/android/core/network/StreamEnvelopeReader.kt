@@ -21,13 +21,32 @@ class StreamEnvelopeReader(
     /** Bytes already buffered locally; used to detect that the sender is ahead of the renderer. */
     fun bufferedBytes(): Int = runCatching { input.available() }.getOrDefault(0)
 
-    fun readHandshakeLine(): String {
+    /**
+     * Waits for the protocol line the daemon sends once it knows which codec it can actually
+     * deliver.
+     *
+     * That decision needs the screencast portal to be approved and the encoder pipeline to come
+     * up, which takes seconds and can take much longer when the desktop shows an approval prompt.
+     * Socket poll timeouts along the way are therefore expected and must not be mistaken for a
+     * dead peer: only a total absence of progress for [timeoutMs] is a real failure.
+     */
+    fun readHandshakeLine(timeoutMs: Long, onIdle: () -> Unit = {}): String {
         val bytes = ArrayList<Byte>(32)
+        var lastProgress = nowMs()
         while (true) {
-            val value = input.read()
+            onIdle()
+            val value = try {
+                input.read()
+            } catch (_: SocketTimeoutException) {
+                if (nowMs() - lastProgress > timeoutMs) {
+                    throw RemoteScreenTransportException("Timed out waiting for the stream handshake")
+                }
+                continue
+            }
             if (value < 0) throw RemoteScreenTransportException("Stream closed before handshake line")
             if (value == '\n'.code) break
             bytes.add(value.toByte())
+            lastProgress = nowMs()
             if (bytes.size >= ScreenStreamProtocol.MAX_HANDSHAKE_BYTES) {
                 throw RemoteScreenTransportException("Stream handshake line is too long")
             }
