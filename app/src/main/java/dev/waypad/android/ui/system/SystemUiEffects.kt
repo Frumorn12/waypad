@@ -43,18 +43,23 @@ fun ExternalPointerCaptureEffect(enabled: Boolean) {
 
 /** Lets the remote display rotate freely, restoring the previous policy on exit. */
 @Composable
-fun RemoteScreenOrientationEffect(enabled: Boolean) {
+fun RemoteScreenOrientationEffect(onRemoteDisplay: Boolean, fullscreen: Boolean) {
     val view = LocalView.current
-    DisposableEffect(enabled, view) {
+    DisposableEffect(onRemoteDisplay, fullscreen, view) {
         val activity = view.context.findActivity()
         val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        activity?.requestedOrientation = if (enabled) {
-            Log.i("WaypadRemoteScreen", "orientation_policy=full_sensor")
-            ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        } else {
-            Log.i("WaypadRemoteScreen", "orientation_policy=portrait")
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        val policy = when {
+            // A desktop is 16:9 and fullscreen exists to give it the whole display. Following the
+            // sensor here would let the phone sit in portrait and waste three quarters of the
+            // screen on letterboxing, so landscape is requested outright — but either way up, so
+            // the phone can still be turned around.
+            fullscreen -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            // Windowed mode has the setup card and the controls to read, so the sensor decides.
+            onRemoteDisplay -> ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            else -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
+        Log.i("WaypadRemoteScreen", "orientation_policy=$policy fullscreen=$fullscreen")
+        activity?.requestedOrientation = policy
         onDispose {
             activity?.requestedOrientation = previous
         }

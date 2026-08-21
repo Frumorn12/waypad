@@ -80,7 +80,10 @@ internal fun WaypadAppShell(
         state.screen in ScreensCapturingExternalPointer
     val connected = state.connectionState == ConnectionState.Connected
 
-    RemoteScreenOrientationEffect(state.screen == Screen.RemoteDisplay)
+    RemoteScreenOrientationEffect(
+        onRemoteDisplay = state.screen == Screen.RemoteDisplay,
+        fullscreen = remoteFullscreen,
+    )
     FullscreenSystemUiEffect(remoteFullscreen)
     ExternalPointerCaptureEffect(externalPointerCapture)
     BackHandler(remoteFullscreen) { actions.onExitFullscreen() }

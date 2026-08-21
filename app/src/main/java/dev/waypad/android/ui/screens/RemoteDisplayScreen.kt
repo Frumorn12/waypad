@@ -30,9 +30,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.FullscreenExit
+import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SportsEsports
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
+import dev.waypad.android.ui.components.ARC_EDGE_WIDTH
 import dev.waypad.android.ui.components.AnimatedErrorBanner
+import dev.waypad.android.ui.components.ArcMenuHandle
+import dev.waypad.android.ui.components.ArcMenuItem
 import dev.waypad.android.ui.components.CapabilityPill
 import dev.waypad.android.ui.components.OVERLAY_ALPHA
 import dev.waypad.android.ui.state.RemoteDisplayActions
@@ -75,6 +84,9 @@ fun RemoteDisplayScreen(
     val gameMode = state.gameMode
     val showFullscreenControls = fullscreen && (!gameMode || state.controlsVisible)
     val activeSource = state.activeSource
+    val arcEdgePx = with(LocalDensity.current) { ARC_EDGE_WIDTH.toPx() }
+    // The arc only exists in fullscreen; windowed mode still has its buttons below the video.
+    val arcItems = remember(gameMode) { arcMenuItems(gameMode) }
     val gestureCallbacks = remember(actions) {
         RemoteDisplayGestureCallbacks(
             onDesktopPointerMove = actions.onDesktopPointerMove,
@@ -148,6 +160,7 @@ fun RemoteDisplayScreen(
                     hapticsEnabled = state.haptics,
                     haptics = haptics,
                     callbacks = gestureCallbacks,
+                    edgeGuardPx = if (fullscreen) arcEdgePx else 0f,
                 ),
             // Children without an explicit `align` are centred, so a self-measuring
             // `AndroidView { WaypadVideoView(...) }` can be dropped into `videoSurface`
@@ -194,7 +207,32 @@ fun RemoteDisplayScreen(
                     modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
-            if (fullscreen && state.controlsVisible && quickKeyboardVisible) {
+            if (fullscreen) {
+                ArcMenuOverlay(
+                    items = arcItems,
+                    enabled = true,
+                    hapticsEnabled = state.haptics,
+                    haptics = haptics,
+                    onActivate = { id ->
+                        when (id) {
+                            ARC_KEYBOARD -> quickKeyboardVisible = !quickKeyboardVisible
+                            ARC_RIGHT_CLICK -> {
+                                actions.onPointerButton(PointerButton.Right, ButtonState.Pressed)
+                                actions.onPointerButton(PointerButton.Right, ButtonState.Released)
+                            }
+                            ARC_GAME_MODE -> actions.onSetGameMode(!gameMode)
+                            ARC_RECONNECT -> actions.onStartStream()
+                            ARC_EXIT -> actions.onSetFullscreen(false)
+                        }
+                    },
+                )
+                ArcMenuHandle(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = WaypadTheme.spacing.sm),
+                )
+            }
+            if (fullscreen && quickKeyboardVisible) {
                 Box(
                     Modifier
                         .align(Alignment.BottomCenter)
@@ -284,3 +322,27 @@ private fun RemoteDisplayScreenPreviewLight() = WaypadPreviewSurface(darkTheme =
         actions = RemoteDisplayActions(),
     )
 }
+
+internal const val ARC_KEYBOARD = "keyboard"
+internal const val ARC_RIGHT_CLICK = "right_click"
+internal const val ARC_GAME_MODE = "game_mode"
+internal const val ARC_RECONNECT = "reconnect"
+internal const val ARC_EXIT = "exit"
+
+/**
+ * Entries of the fullscreen arc menu, in the order the thumb runs through them.
+ *
+ * Exit sits at the bottom because it is the one that ends the session: putting it under the
+ * resting position of the thumb would make it the easiest to hit by accident.
+ */
+internal fun arcMenuItems(gameMode: Boolean): List<ArcMenuItem> = listOf(
+    ArcMenuItem(ARC_KEYBOARD, "Keyboard", Icons.Rounded.Keyboard),
+    ArcMenuItem(ARC_RIGHT_CLICK, "Right click", Icons.Rounded.TouchApp),
+    ArcMenuItem(
+        ARC_GAME_MODE,
+        if (gameMode) "Leave game mode" else "Game mode",
+        Icons.Rounded.SportsEsports,
+    ),
+    ArcMenuItem(ARC_RECONNECT, "Reconnect", Icons.Rounded.Refresh),
+    ArcMenuItem(ARC_EXIT, "Exit fullscreen", Icons.Rounded.FullscreenExit),
+)

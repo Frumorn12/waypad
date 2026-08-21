@@ -47,6 +47,10 @@ private const val SCROLL_DAMPING = 0.75f
  * @param viewSize measured size of the viewport box
  * @param sourceKey id of the capture source; a change restarts the recogniser
  * @param hapticsEnabled snapshot of the user's haptics preference
+ * @param edgeGuardPx width of the trailing strip reserved for the arc menu; touches starting
+ *   inside it are ignored here. The overlay above consumes them, but this recogniser deliberately
+ *   takes pointers with `requireUnconsumed = false`, so it has to be told to keep its hands off
+ *   rather than relying on consumption.
  */
 fun Modifier.remoteDisplayGestures(
     frameWidth: Int?,
@@ -57,7 +61,8 @@ fun Modifier.remoteDisplayGestures(
     hapticsEnabled: Boolean,
     haptics: HapticFeedback,
     callbacks: RemoteDisplayGestureCallbacks,
-): Modifier = pointerInput(frameWidth, frameHeight, viewSize, sourceKey) {
+    edgeGuardPx: Float = 0f,
+): Modifier = pointerInput(frameWidth, frameHeight, viewSize, sourceKey, edgeGuardPx) {
     if (frameWidth == null || frameHeight == null) return@pointerInput
     if (viewSize.width <= 0 || viewSize.height <= 0) return@pointerInput
     val viewport = ScreenViewport(
@@ -68,6 +73,9 @@ fun Modifier.remoteDisplayGestures(
     )
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
+        if (edgeGuardPx > 0f && down.position.x >= size.width - edgeGuardPx) {
+            return@awaitEachGesture
+        }
         down.consume()
         val start = viewport.map(down.position.x, down.position.y)
         var lastPoint = start
