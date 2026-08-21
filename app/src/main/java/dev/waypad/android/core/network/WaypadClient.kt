@@ -186,6 +186,19 @@ class WaypadClient {
         command("stop_screen_stream", JSONObject().put("session_id", sessionId))
     }
 
+    /**
+     * Mutes desktop audio at the source.
+     *
+     * The phone silences playback on its own the moment the user asks, so this is not what makes
+     * it quiet — it is what stops the host burning bandwidth on audio nobody is listening to.
+     */
+    suspend fun setDesktopAudioMute(sessionId: String, muted: Boolean) {
+        command(
+            "set_desktop_audio_mute",
+            JSONObject().put("session_id", sessionId).put("muted", muted),
+        )
+    }
+
     fun close() {
         channel?.close()
         channel = null

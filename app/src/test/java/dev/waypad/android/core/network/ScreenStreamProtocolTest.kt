@@ -140,4 +140,50 @@ class ScreenStreamProtocolTest {
         assertEquals(1280, header.sourceWidth)
         assertEquals(720, header.sourceHeight)
     }
+
+    @Test
+    fun parsesAnOpusAudioHeader() {
+        val header = ScreenStreamProtocol.parseHeader(
+            """{"seq":9,"timestamp_ms":1700000000123,"codec":"opus","sample_rate":48000,
+               "channels":2,"frame_ms":20,"pre_skip":312,"key_frame":false,"config":false}""",
+            defaultCodec = ScreenStreamProtocol.CODEC_H264,
+        )
+
+        assertEquals(9L, header.seq)
+        assertEquals("opus", header.codec)
+        assertEquals(48_000, header.sampleRate)
+        assertEquals(2, header.channels)
+        assertEquals(20, header.frameMs)
+        assertEquals(312, header.preSkipSamples)
+        assertTrue(header.isOpus)
+        assertFalse(header.isVideo)
+        assertFalse(header.isH264)
+        assertFalse(header.isJpeg)
+    }
+
+    @Test
+    fun `video headers carry no audio fields and stay video`() {
+        val header = ScreenStreamProtocol.parseHeader(
+            """{"seq":1,"timestamp_ms":0,"width":1920,"height":1080,"codec":"h264","key_frame":true,"config":false}""",
+        )
+
+        assertEquals(0, header.sampleRate)
+        assertEquals(0, header.channels)
+        assertFalse(header.isOpus)
+        assertTrue(header.isVideo)
+    }
+
+    @Test
+    fun `audio envelopes never act as key frames or config frames`() {
+        // The batch pruner keys off both flags without looking at the codec, so an audio envelope
+        // claiming either would make the phone throw away video frames or the H.264 parameter sets.
+        val header = ScreenStreamProtocol.parseHeader(
+            """{"seq":3,"timestamp_ms":0,"codec":"opus","sample_rate":48000,"channels":2,
+               "frame_ms":20,"pre_skip":312,"key_frame":false,"config":false}""",
+        )
+
+        assertFalse(header.keyFrame)
+        assertFalse(header.config)
+        assertTrue(header.isDroppable)
+    }
 }

@@ -70,6 +70,7 @@ data class RemoteDisplayUiState(
     val gameMode: Boolean = false,
     val controlsVisible: Boolean = true,
     val haptics: Boolean = true,
+    val audioMuted: Boolean = false,
 ) {
     /** Source actually feeding the viewport, falling back to the user selection. */
     val activeSource: ScreenSource?

@@ -87,6 +87,7 @@ data class WaypadUiState(
      */
     val videoWidth: Int? = null,
     val videoHeight: Int? = null,
+    val audioMuted: Boolean = false,
     val screenStreaming: Boolean = false,
     val screenConnectionState: RemoteScreenConnectionState = RemoteScreenConnectionState.Idle,
     val remoteScreenFullscreen: Boolean = false,
@@ -1094,6 +1095,21 @@ class WaypadViewModel(
                 _state.update { it.copy(videoWidth = width, videoHeight = height) }
             }
         }
+        val audio = videoSession.renderer.audio
+        audio.attachAudioFocus(getApplication())
+        audio.onMuteChanged = { muted ->
+            // Playback is already silent locally; this only tells the host to stop sending.
+            val sessionId = _state.value.screenStreamInfo?.sessionId
+            if (sessionId != null) {
+                viewModelScope.launch {
+                    runCatching { client.setDesktopAudioMute(sessionId, muted) }
+                        .onFailure { Log.w(TAG, "desktop_audio_mute_failed muted=$muted", it) }
+                }
+            }
+        }
+        viewModelScope.launch {
+            audio.muted.collect { muted -> _state.update { it.copy(audioMuted = muted) } }
+        }
         viewModelScope.launch {
             videoSession.renderError.collect { error ->
                 if (error != null) {
@@ -1446,6 +1462,11 @@ class WaypadViewModel(
                     fail("Input failed", throwable)
                 }
             }
+    }
+
+    /** Flips desktop audio on the phone, and tells the host to stop sending while it is off. */
+    fun toggleAudioMute() {
+        videoSession.renderer.audio.toggleMute()
     }
 
     override fun onCleared() {

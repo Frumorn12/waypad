@@ -13,6 +13,12 @@ object ScreenStreamProtocol {
     const val CODEC_H264 = "h264"
     const val CODEC_JPEG = "jpeg"
 
+    /**
+     * Desktop audio, interleaved with the video envelopes on the very same socket. Routing is per
+     * envelope, so the two share the connection without any extra handshake or port.
+     */
+    const val CODEC_OPUS = "opus"
+
     /** Transport that multiplexes the stream on the control port and expects a JSON attach line. */
     const val TRANSPORT_CONTROL_PORT_V2 = "waypad-control-port-stream-v2"
 
@@ -52,6 +58,10 @@ object ScreenStreamProtocol {
             codec = fields.stringValue("codec", defaultCodec).lowercase(),
             keyFrame = fields.booleanValue("key_frame", false),
             config = fields.booleanValue("config", false),
+            sampleRate = fields.intValue("sample_rate", 0),
+            channels = fields.intValue("channels", 0),
+            frameMs = fields.intValue("frame_ms", 0),
+            preSkipSamples = fields.intValue("pre_skip", 0),
         )
     }
 
@@ -100,12 +110,29 @@ data class StreamFrameHeader(
     val codec: String,
     val keyFrame: Boolean,
     val config: Boolean,
+    /**
+     * Audio-only fields, zero on a video envelope. The daemon repeats them on every audio packet
+     * rather than sending a one-off init envelope, so a client that joined late — or whose batch
+     * pruning threw the init away — can still build its decoder from the next packet it sees.
+     */
+    val sampleRate: Int = 0,
+    val channels: Int = 0,
+    val frameMs: Int = 0,
+    /** Encoder lookahead the decoder has to trim; feeds the `csd-1` buffer. */
+    val preSkipSamples: Int = 0,
 ) {
     val isH264: Boolean
         get() = codec == ScreenStreamProtocol.CODEC_H264 || codec == "avc" || codec == "avc1"
 
     val isJpeg: Boolean
         get() = codec.isBlank() || codec == ScreenStreamProtocol.CODEC_JPEG || codec == "jpg" || codec == "mjpeg"
+
+    val isOpus: Boolean
+        get() = codec == ScreenStreamProtocol.CODEC_OPUS
+
+    /** True for anything the video pipeline has to draw; audio takes its own path. */
+    val isVideo: Boolean
+        get() = !isOpus
 
     /** A codec-config envelope carries SPS/PPS and must never be dropped. */
     val isDroppable: Boolean

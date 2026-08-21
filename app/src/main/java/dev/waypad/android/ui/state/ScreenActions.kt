@@ -67,6 +67,7 @@ data class RemoteDisplayActions(
     val onDesktopPointerMove: (x: Float, y: Float) -> Unit = { _, _ -> },
     val onDesktopClick: (x: Float, y: Float) -> Unit = { _, _ -> },
     val onScroll: (dx: Float, dy: Float, finish: Boolean) -> Unit = { _, _, _ -> },
+    val onToggleAudioMute: () -> Unit = {},
 )
 
 @Immutable

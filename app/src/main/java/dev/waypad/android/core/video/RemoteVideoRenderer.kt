@@ -2,6 +2,8 @@ package dev.waypad.android.core.video
 
 import android.util.Log
 import android.view.Surface
+import dev.waypad.android.core.audio.EncodedAudioPacket
+import dev.waypad.android.core.audio.RemoteAudioPlayer
 import dev.waypad.android.core.network.StreamProtocolVersion
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,9 +18,18 @@ private const val TAG = "WaypadVideoRenderer"
  * `WAYPAD_STREAM_V2` goes to the hardware [H264SurfaceDecoder], `WAYPAD_STREAM_V1` to the software
  * [JpegSurfaceRenderer]; both paint onto the same surface, so the view never has to know which
  * protocol the daemon picked. Only one backend holds the surface at a time.
+ *
+ * Desktop audio arrives interleaved on that same socket, distinguished only by the `codec` field of
+ * its header, and is forwarded to [audio]. Routing per envelope rather than per socket is what lets
+ * sound share the connection with no second port and no extra handshake.
  */
 class RemoteVideoRenderer(
     private val listener: VideoRenderListener = VideoRenderListener.NoOp,
+    /**
+     * Desktop audio playback. Exposed so the UI can bind a mute switch and the lifecycle without
+     * having to know how the stream is routed; see [RemoteAudioPlayer].
+     */
+    val audio: RemoteAudioPlayer = RemoteAudioPlayer(),
 ) : VideoFrameSink {
 
     private val lock = Any()
@@ -92,15 +103,21 @@ class RemoteVideoRenderer(
         _sourceSize.value = VideoSize.Unknown
         if (useJpeg) jpeg.reset() else h264.reset()
         handOverSurface(current, useJpeg)
+        audio.onStreamStarted()
     }
 
     override fun onFrame(frame: EncodedVideoFrame) {
         if (released) return
+        // Route on the envelope itself: a daemon may still emit JPEG on a v2 socket, and audio
+        // packets are interleaved with the video ones on the very same connection.
+        if (frame.header.isOpus) {
+            audio.submit(EncodedAudioPacket(frame.header, frame.payload))
+            return
+        }
         val source = VideoSize(frame.header.sourceWidth, frame.header.sourceHeight)
         if (source.isValid && _sourceSize.value != source) {
             _sourceSize.value = source
         }
-        // Route on the envelope itself: a daemon may still emit JPEG on a v2 socket.
         when {
             frame.header.isH264 -> h264.submit(frame)
             frame.header.isJpeg -> jpeg.submit(frame)
@@ -113,6 +130,7 @@ class RemoteVideoRenderer(
         Log.i(TAG, "stream_ended error=${error?.message}")
         h264.reset()
         jpeg.reset()
+        audio.onStreamEnded()
     }
 
     fun release() {
@@ -122,6 +140,7 @@ class RemoteVideoRenderer(
         onVideoSize = null
         h264.release()
         jpeg.release()
+        audio.release()
     }
 
     private fun handOverSurface(target: Surface?, useJpeg: Boolean) {

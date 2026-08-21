@@ -101,6 +101,7 @@ fun rememberWaypadActions(viewModel: WaypadViewModel): WaypadActions = remember(
             onDesktopPointerMove = viewModel::remoteScreenPointerMove,
             onDesktopClick = { x, y -> viewModel.remoteScreenClick(x, y) },
             onScroll = { dx, dy, finish -> viewModel.scroll(dx, dy, finish) },
+            onToggleAudioMute = viewModel::toggleAudioMute,
         ),
         keyboard = KeyboardActions(
             onKeyboardEdit = viewModel::sendLiveKeyboardEdit,
@@ -183,6 +184,7 @@ internal fun WaypadUiState.toRemoteDisplayState(): RemoteDisplayUiState = Remote
     gameMode = remoteScreenGameMode,
     controlsVisible = remoteScreenControlsVisible,
     haptics = haptics,
+    audioMuted = audioMuted,
 )
 
 internal fun WaypadUiState.toControlsState(): ControlsUiState = ControlsUiState(

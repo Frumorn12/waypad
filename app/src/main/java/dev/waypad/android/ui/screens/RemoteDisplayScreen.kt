@@ -33,6 +33,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.TouchApp
@@ -87,7 +89,9 @@ fun RemoteDisplayScreen(
     val activeSource = state.activeSource
     val arcEdgePx = with(LocalDensity.current) { ARC_EDGE_WIDTH.toPx() }
     // The arc only exists in fullscreen; windowed mode still has its buttons below the video.
-    val arcItems = remember(gameMode) { arcMenuItems(gameMode) }
+    val arcItems = remember(gameMode, state.audioMuted) {
+        arcMenuItems(gameMode, state.audioMuted)
+    }
     val gestureCallbacks = remember(actions) {
         RemoteDisplayGestureCallbacks(
             onDesktopPointerMove = actions.onDesktopPointerMove,
@@ -225,6 +229,7 @@ fun RemoteDisplayScreen(
                                 actions.onPointerButton(PointerButton.Right, ButtonState.Pressed)
                                 actions.onPointerButton(PointerButton.Right, ButtonState.Released)
                             }
+                            ARC_AUDIO -> actions.onToggleAudioMute()
                             ARC_GAME_MODE -> actions.onSetGameMode(!gameMode)
                             ARC_RECONNECT -> actions.onStartStream()
                             ARC_EXIT -> actions.onSetFullscreen(false)
@@ -330,6 +335,7 @@ private fun RemoteDisplayScreenPreviewLight() = WaypadPreviewSurface(darkTheme =
 
 internal const val ARC_KEYBOARD = "keyboard"
 internal const val ARC_RIGHT_CLICK = "right_click"
+internal const val ARC_AUDIO = "audio"
 internal const val ARC_GAME_MODE = "game_mode"
 internal const val ARC_RECONNECT = "reconnect"
 internal const val ARC_EXIT = "exit"
@@ -340,9 +346,14 @@ internal const val ARC_EXIT = "exit"
  * Exit sits at the bottom because it is the one that ends the session: putting it under the
  * resting position of the thumb would make it the easiest to hit by accident.
  */
-internal fun arcMenuItems(gameMode: Boolean): List<ArcMenuItem> = listOf(
+internal fun arcMenuItems(gameMode: Boolean, audioMuted: Boolean): List<ArcMenuItem> = listOf(
     ArcMenuItem(ARC_KEYBOARD, "Keyboard", Icons.Rounded.Keyboard),
     ArcMenuItem(ARC_RIGHT_CLICK, "Right click", Icons.Rounded.TouchApp),
+    ArcMenuItem(
+        ARC_AUDIO,
+        if (audioMuted) "Unmute audio" else "Mute audio",
+        if (audioMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+    ),
     ArcMenuItem(
         ARC_GAME_MODE,
         if (gameMode) "Leave game mode" else "Game mode",
