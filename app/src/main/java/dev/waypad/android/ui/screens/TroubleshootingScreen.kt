@@ -105,7 +105,7 @@ fun TroubleshootingScreen(
                 Text("Host-side checks", style = MaterialTheme.typography.titleMedium)
                 Text(
                     "Run `waypad-daemon doctor` and inspect " +
-                        "`journalctl --user -u waypad-daemon -f` on the Linux host.",
+                        "the Waypad panel on the host, or `journalctl --user -u waypad-daemon -f` on Linux.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

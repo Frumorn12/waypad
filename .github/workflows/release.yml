@@ -1,0 +1,91 @@
+name: android-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    # `secrets` cannot be read from a step-level `if`, so the question "is a
+    # keystore configured" is answered once here.
+    env:
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Signing is optional so a release can be cut before a keystore exists.
+      # Without one the job still produces an installable APK — it is just the
+      # debug-signed build, and the release notes say so rather than pretending
+      # otherwise.
+      - name: Decode the signing keystore
+        id: keystore
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/waypad.jks"
+          echo "path=$RUNNER_TEMP/waypad.jks" >> "$GITHUB_OUTPUT"
+
+      - name: Build a signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          WAYPAD_KEYSTORE: ${{ steps.keystore.outputs.path }}
+          WAYPAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          WAYPAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          WAYPAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      # Without a keystore a release build comes out unsigned, and Android
+      # will not install it. The debug build is signed with the universal debug
+      # key, so it is at least installable — which is what someone downloading
+      # a release actually needs.
+      - name: Build a debug-signed APK instead
+        if: env.HAS_KEYSTORE != 'true'
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Collect the APK
+        id: collect
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          # An unsigned APK is never published as if it were installable, so it
+          # is excluded here rather than renamed.
+          apk=$(find app/build/outputs/apk -name '*.apk' ! -name '*unsigned*' | head -1)
+          if [ -z "$apk" ]; then
+            echo "no installable APK was produced" >&2
+            find app/build/outputs/apk -name '*.apk' >&2
+            exit 1
+          fi
+          case "$apk" in
+            *release*) name="waypad-${version}.apk"; signed=yes ;;
+            *)         name="waypad-${version}-debug-signed.apk"; signed=no ;;
+          esac
+          cp "$apk" "dist/$name"
+          sha256sum "dist/$name" > "dist/$name.sha256"
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: dist/*
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            The Waypad Android app. Pair it with a host from the
+            `waypad-deamon` repository at the matching tag — Linux/Wayland or
+            Windows, the app works with either.
+
+            ${{ steps.collect.outputs.signed == 'no' && '**This build is debug-signed**, because no release keystore is configured for this repository. Android will refuse to install it over a release-signed copy.' || '' }}

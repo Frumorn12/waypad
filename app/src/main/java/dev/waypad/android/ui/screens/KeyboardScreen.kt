@@ -25,7 +25,7 @@ import dev.waypad.android.ui.theme.WaypadTheme
 
 private const val LIVE_INPUT_MIN_LINES = 4
 
-/** Live text forwarding plus the Wayland-safe shortcut palette. */
+/** Live text forwarding plus the shortcut palette. */
 @Composable
 fun KeyboardScreen(
     actions: KeyboardActions,
@@ -39,7 +39,7 @@ fun KeyboardScreen(
         item {
             SectionHeader(
                 "Keyboard",
-                "Send text and common Wayland-safe shortcuts through the daemon.",
+                "Send text and common shortcuts through the daemon.",
             )
             WaypadCard {
                 OutlinedTextField(
@@ -55,9 +55,9 @@ fun KeyboardScreen(
                 )
                 Spacer(Modifier.height(WaypadTheme.spacing.lg))
                 Text(
-                    "Typing here is forwarded immediately to the focused PC window. On Hyprland " +
-                        "without RemoteDesktop portal, ASCII text uses IPC key events and " +
-                        "unsupported text falls back to clipboard paste.",
+                    "Typing here is forwarded immediately to the focused PC window. Windows types " +
+                        "any character directly; on Hyprland without the RemoteDesktop portal, ASCII " +
+                        "uses IPC key events and the rest falls back to a clipboard paste.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

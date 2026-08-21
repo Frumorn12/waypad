@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -13,6 +17,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
       - uses: gradle/actions/setup-gradle@v4
-      - run: gradle :app:testDebugUnitTest
-      - run: gradle :app:assembleDebug
+      # The wrapper, not whatever gradle the runner happens to ship: the
+      # version the project is tested against is the one committed here.
+      - run: ./gradlew --no-daemon :app:testDebugUnitTest
+      - run: ./gradlew --no-daemon :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: app/build/outputs/apk/debug/*.apk

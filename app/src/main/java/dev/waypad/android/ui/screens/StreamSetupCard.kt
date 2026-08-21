@@ -53,7 +53,7 @@ import dev.waypad.android.ui.theme.WaypadTheme
 /** Colour role each capture backend is rendered with, so the user can tell them apart at a glance. */
 @Composable
 internal fun backendAccent(backend: String): Color = when (backend) {
-    "wayland-screencast-portal" -> MaterialTheme.colorScheme.primary
+    "wayland-screencast-portal", "windows-dxgi" -> MaterialTheme.colorScheme.primary
     "x11-ffmpeg" -> MaterialTheme.colorScheme.tertiary
     else -> MaterialTheme.colorScheme.secondary
 }

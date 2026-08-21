@@ -532,7 +532,7 @@ class WaypadViewModel(
         val current = _state.value
         val host = current.selectedHost ?: return
         if (current.pairingCode.length != 6) {
-            _state.update { it.copy(error = "Enter the 6 digit pairing code shown on the Linux host.") }
+            _state.update { it.copy(error = "Enter the 6 digit pairing code shown on the host.") }
             return
         }
         val invite = pendingInvite?.takeIf { it.pairingCode == current.pairingCode }

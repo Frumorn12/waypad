@@ -39,7 +39,7 @@ fun PairingScreen(
     Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
         SectionHeader(
             "Pair ${state.hostName ?: "host"}",
-            "Run `waypad-daemon pair-code` on the Linux host, then enter the code here.",
+            "Open the Waypad panel on your PC, or run `waypad-daemon pair-code`, then enter the code here.",
         )
         WaypadCard {
             Text(

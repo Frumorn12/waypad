@@ -11,10 +11,37 @@ android {
         applicationId = "dev.waypad.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Kept in step with the host daemon: a phone and a host released under
+        // the same tag should not disagree about which version they are.
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // Signing details come from the environment so no key material is ever
+    // committed. Absent them there is no release signing config at all, and
+    // `assembleRelease` produces an unsigned APK that says so by its filename
+    // rather than one that looks installable and is not.
+    val keystorePath = System.getenv("WAYPAD_KEYSTORE")
+    if (!keystorePath.isNullOrBlank()) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("WAYPAD_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("WAYPAD_KEY_ALIAS")
+                keyPassword = System.getenv("WAYPAD_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (!keystorePath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     buildFeatures {

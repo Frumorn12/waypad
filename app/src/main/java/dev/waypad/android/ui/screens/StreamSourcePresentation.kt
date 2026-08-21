@@ -54,6 +54,8 @@ fun presentSource(source: ScreenSource): SourcePresentation {
             BackendDescriptor(SourceGroup.Fallback, "Screenshot", "Screenshot capture, about 6 fps", false)
         "x11-ffmpeg" ->
             BackendDescriptor(SourceGroup.Fallback, "X11", "X11 and JPEG, no approval needed", false)
+        "windows-dxgi" ->
+            BackendDescriptor(SourceGroup.Recommended, null, "Hardware H.264, no approval needed", true)
         else -> BackendDescriptor(SourceGroup.Fallback, source.backend, source.backend, false)
     }
     // The same monitor appears once per fallback backend, so the method has to be part of the

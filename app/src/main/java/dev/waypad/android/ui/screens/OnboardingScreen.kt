@@ -29,13 +29,13 @@ fun OnboardingScreen(
 ) {
     Column(modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
         Text(
-            "Wayland control,\nwithout X11 shortcuts.",
+            "Your desktop,\nfrom your pocket.",
             style = MaterialTheme.typography.displaySmall,
         )
         Spacer(Modifier.height(WaypadTheme.spacing.gutter))
         Text(
-            "Pair your Android phone with a Linux Wayland host. Waypad uses a pinned host identity, " +
-                "encrypted command channel, and portal-aware capability checks.",
+            "Pair your Android phone with a Linux or Windows host. Waypad uses a pinned host identity, " +
+                "an encrypted command channel, and capability checks that say what each host can do.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
