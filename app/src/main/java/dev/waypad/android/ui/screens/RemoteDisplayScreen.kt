@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.TouchApp
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntSize
 import dev.waypad.android.ui.components.ARC_EDGE_WIDTH
@@ -95,6 +96,10 @@ fun RemoteDisplayScreen(
             onScroll = actions.onScroll,
         )
     }
+
+    // Registered deeper than the shell's fullscreen handler, so it runs first: Back closes the
+    // quick keyboard before it is allowed to mean "leave fullscreen".
+    BackHandler(fullscreen && quickKeyboardVisible) { quickKeyboardVisible = false }
 
     LaunchedEffect(fullscreen, gameMode, state.controlsVisible) {
         if (fullscreen && gameMode && state.controlsVisible) {
